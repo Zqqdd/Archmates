@@ -8,7 +8,7 @@
 //!   archmates profile                 show what your friends see of you
 //!   archmates avatar [<image>]        show or set your profile picture
 //!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
-//!   archmates update                  check whether a new version is available
+//!   archmates update [--install]      check for a new version (and install it)
 //!   archmates daemon                  run the service (normally via systemd)
 
 mod config;
@@ -69,8 +69,12 @@ enum Command {
         #[arg(value_enum)]
         mode: Option<WidgetMode>,
     },
-    /// Check whether a new version is available
-    Update,
+    /// Check whether a new version is available (--install: download and install it)
+    Update {
+        /// Download the latest release, check it and install it
+        #[arg(long)]
+        install: bool,
+    },
     /// Run the presence service (in the foreground)
     Daemon,
 }
@@ -225,11 +229,23 @@ async fn main() -> Result<()> {
                 Some(_) => {}
             }
         }
-        Command::Update => {
+        Command::Update { install } => {
             println!("Installed version: {}", update::CURRENT);
             let latest = update::latest_version().await?;
-            if update::is_newer(&latest, update::CURRENT) {
-                println!("✓ Version {latest} is available. Update with:\n  {}", update::how_to_update());
+            let newer = update::is_newer(&latest, update::CURRENT);
+            // ARCHMATES_UPDATE_FORCE=1 reinstalls the latest release even when up to date (testing).
+            let force = std::env::var_os("ARCHMATES_UPDATE_FORCE").is_some();
+            if !install {
+                if newer {
+                    println!("✓ Version {latest} is available. Update with:\n  {}", update::how_to_update());
+                } else {
+                    println!("✓ You are up to date (latest release: {latest}).");
+                }
+            } else if update::managed_by_pacman() {
+                println!("archmates is managed by pacman here: update it with  sudo pacman -Syu");
+            } else if newer || force {
+                update::install(&latest).await?;
+                println!("\n✓ archmates {latest} installed. The service restarts by itself.");
             } else {
                 println!("✓ You are up to date (latest release: {latest}).");
             }

@@ -11,15 +11,7 @@ directly over encrypted connections, powered by [Iroh](https://iroh.computer).
 
 ## Install
 
-### From the AUR (coming soon: updates will come with your system updates)
-
-```bash
-paru -S archmates-bin
-systemctl --user enable --now archmates
-archmates-setup-desktop
-```
-
-### From a release archive (no Rust needed)
+### From a release archive (recommended, no Rust needed)
 
 Download `archmates-<version>-x86_64-linux.tar.gz` from the
 [releases page](https://github.com/Zqqdd/Archmates/releases), then:
@@ -61,7 +53,7 @@ archmates remove <nickname>        # remove a friend
 archmates invisible on|off         # invisible mode
 archmates profile                  # what your friends see of you
 archmates avatar [<image>]         # show or set your profile picture
-archmates update                   # check whether a new version is available
+archmates update [--install]       # check for a new version (and install it)
 ```
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
@@ -123,15 +115,21 @@ removed from your list automatically.
 
 Your friend code, your friends list and your settings are kept: you never need to add your friends again.
 
-First, check which version you have and whether a new one exists:
+### One command (v0.2.4 and later)
 
 ```bash
-archmates update
+archmates update --install
 ```
 
-Then follow the steps for the way you installed archmates.
+It downloads the latest release from GitHub, checks its SHA-256 checksum, and runs the installer it contains.
+Nothing is installed if the checksum does not match. No password is needed. The service restarts by itself
+with the new version.
 
-### You installed from a release archive
+To only check whether a new version exists: `archmates update`.
+
+### Coming from an older version (v0.2.3 or before)
+
+Those versions do not have `--install` yet: update by hand once, and use the command above afterwards.
 
 1. Download the latest `archmates-<version>-x86_64-linux.tar.gz` from the
    [latest release](https://github.com/Zqqdd/Archmates/releases/latest).
@@ -143,13 +141,7 @@ Then follow the steps for the way you installed archmates.
    ./installer.sh
    ```
 
-3. Check that it worked:
-
-   ```bash
-   archmates update      # should say "You are up to date"
-   ```
-
-> **Coming from v0.2.0 with a service you created by hand?** Run `systemctl --user disable archmates` once
+> **Installed v0.2.0 with a service you created by hand?** Run `systemctl --user disable archmates` once
 > before `./installer.sh`, so the installer can put the right service in place.
 
 ### You installed from source (git clone)
@@ -160,22 +152,18 @@ git pull
 ./installer.sh
 ```
 
-### You installed from the AUR
-
-archmates is updated with the rest of your system:
-
-```bash
-paru -Syu             # or: yay -Syu
-```
-
 ### What happens automatically
 
 - Once a day, the service checks GitHub for a new release. When there is one, you get a notification and the
-  widget shows "Update available". Nothing is downloaded or installed automatically: updates always go through
-  the installer or pacman, so you can see what lands on your machine. Set `ARCHMATES_NO_UPDATE_CHECK=1` to
-  turn the check off.
+  widget shows "Update …: archmates update --install". Nothing is installed without you running that command.
+  Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn the check off.
 - After an update, the running service notices that its program was replaced and restarts itself
   (within ~30 s): there is nothing to restart by hand.
+
+### AUR
+
+New AUR package submissions are currently closed. A ready `PKGBUILD` for `archmates-bin` is kept in
+`packaging/aur/` for when they reopen.
 
 ### Publishing a new version (maintainers)
 

@@ -99,7 +99,7 @@ function render()
     if state.me.update_available then
       table.insert(children, ui.row({ gap = 6, align = "center" }, {
         ui.glyph({ name = "download", size = 13, color = "tertiary" }),
-        ui.label({ text = "Update available: " .. state.me.update_available, fontSize = 11, color = "tertiary" }),
+        ui.label({ text = "Update " .. state.me.update_available .. ": archmates update --install", fontSize = 11, color = "tertiary" }),
       }))
     end
     if state.me.invisible then

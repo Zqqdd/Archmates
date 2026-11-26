@@ -260,7 +260,7 @@ class Widget(Gtk.ApplicationWindow):
         if time.time() * 1000 - me.get("updated_ms", 0) > 120_000:
             self.card.append(label("Service stopped (status frozen)", "warning"))
         if me.get("update_available"):
-            self.card.append(label(f"Update available: {me['update_available']}", "notice"))
+            self.card.append(label(f"Update {me['update_available']}: archmates update --install", "notice"))
         if me.get("invisible"):
             self.card.append(label("You are in invisible mode", "notice"))
 
