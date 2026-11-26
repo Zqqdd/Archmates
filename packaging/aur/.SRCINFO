@@ -1,6 +1,6 @@
 pkgbase = archmates-bin
 	pkgdesc = Peer-to-peer friends list for Arch Linux: see when your friends are online
-	pkgver = 0.2.4
+	pkgver = 0.2.5
 	pkgrel = 1
 	url = https://github.com/Zqqdd/Archmates
 	install = archmates.install
@@ -15,7 +15,7 @@ pkgbase = archmates-bin
 	optdepends = python: automatic widget placement on Hyprland
 	provides = archmates
 	conflicts = archmates
-	source = https://github.com/Zqqdd/Archmates/releases/download/v0.2.4/archmates-0.2.4-x86_64-linux.tar.gz
-	sha256sums = 16b8b872599297297b34893bbf92741ea3c615a95acd57007a1f87cfbe5e7e02
+	source = https://github.com/Zqqdd/Archmates/releases/download/v0.2.5/archmates-0.2.5-x86_64-linux.tar.gz
+	sha256sums = c2a83751f81e45ba954c4b9a63e3686368049317336e9f90cf05faaa75fca188
 
 pkgname = archmates-bin
