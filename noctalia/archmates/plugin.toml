@@ -1,7 +1,7 @@
 # "Archmates" desktop widget: shows the state written by the archmates service
 id = "archmates/archmates"
 name = "Archmates"
-version = "0.2.5"
+version = "0.3.0"
 plugin_api = 43
 author = "archmates"
 license = "MIT"
