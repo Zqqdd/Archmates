@@ -9,6 +9,9 @@
 //!   archmates send <friend> <text>    send a message (delivered when they are online)
 //!   archmates send-file <friend> <f>  send a file (your friend must be online)
 //!   archmates chat <friend>           show the conversation
+//!   archmates delete-chat <friend>    delete a conversation for good, with the files they sent you
+//!   archmates voice send <friend>     record and send a voice message (5 min max)
+//!   archmates voice play <file>       play a voice message
 //!   archmates stats on|off            share your RAM and storage usage with friends
 //!   archmates avatar [<image>]        show or set your profile picture
 //!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
@@ -86,6 +89,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Delete a conversation for good, with every file this friend sent you
+    DeleteChat {
+        #[arg(value_name = "NICKNAME|CODE")]
+        with: String,
+        /// Don't ask for confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Voice messages (up to 5 minutes, deleted at every restart)
+    #[command(subcommand)]
+    Voice(VoiceCommand),
     /// Share your RAM and storage usage with your friends (on by default)
     Stats {
         #[arg(value_enum)]
@@ -114,6 +128,17 @@ enum Command {
     Daemon,
 }
 
+#[derive(Subcommand)]
+enum VoiceCommand {
+    /// Record from your microphone (press Enter to stop, 5 min max) and send it
+    Send {
+        #[arg(value_name = "NICKNAME|CODE")]
+        to: String,
+    },
+    /// Play a voice message (the file shown in the conversation)
+    Play { file: std::path::PathBuf },
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum WidgetMode {
     Auto,
@@ -125,6 +150,42 @@ enum WidgetMode {
 enum OnOff {
     On,
     Off,
+}
+
+#[cfg(feature = "voice")]
+async fn voice_send(to: String) -> Result<()> {
+    let recorder = archmates::voice::Recorder::start()?;
+    println!("● Recording… press Enter to stop and send (5 min max).");
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    })
+    .await?;
+    let wav = recorder.finish()?;
+    let tmp = Paths::detect().cache.join(format!("recording-{}.wav", std::process::id()));
+    config::write_atomic(&tmp, &wav)?;
+    let result = ipc::request(&ipc::Command::SendVoice { to, path: tmp.to_string_lossy().into_owned() }).await;
+    let _ = std::fs::remove_file(&tmp);
+    println!("✓ {}", result?.message);
+    Ok(())
+}
+
+#[cfg(feature = "voice")]
+fn voice_play(file: &std::path::Path) -> Result<()> {
+    let player = archmates::voice::Player::play(file)?;
+    println!("▶ Playing ({})…", archmates::voice::format_secs(player.secs as u32));
+    player.wait();
+    Ok(())
+}
+
+#[cfg(not(feature = "voice"))]
+async fn voice_send(_to: String) -> Result<()> {
+    anyhow::bail!("this archmates was built without voice support")
+}
+
+#[cfg(not(feature = "voice"))]
+fn voice_play(_file: &std::path::Path) -> Result<()> {
+    anyhow::bail!("this archmates was built without voice support")
 }
 
 fn ago(ms: u64) -> String {
@@ -267,6 +328,32 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::DeleteChat { with, yes } => {
+            let list = FriendList::load(&paths)?;
+            let Some(friend) = list.friends.iter().find(|f| f.nickname == with || f.code == with) else {
+                anyhow::bail!("no friend named \"{with}\"");
+            };
+            if !yes {
+                println!(
+                    "Delete your whole conversation with {} for good, with every file they sent you ({})?",
+                    friend.nickname,
+                    archmates::transfer::received_dir(&friend.nickname).display()
+                );
+                print!("This cannot be undone. Type \"yes\" to confirm: ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim() != "yes" {
+                    println!("Nothing deleted.");
+                    return Ok(());
+                }
+            }
+            let d = chat::delete_conversation(&paths, &friend.code, &friend.nickname)?;
+            println!("✓ Conversation with {} deleted ({} messages, {} files).", friend.nickname, d.messages, d.files);
+        }
+        Command::Voice(VoiceCommand::Send { to }) => voice_send(to).await?,
+        Command::Voice(VoiceCommand::Play { file }) => voice_play(&file)?,
         Command::Stats { state } => {
             let on = matches!(state, OnOff::On);
             stats::set_sharing(&paths, on)?;

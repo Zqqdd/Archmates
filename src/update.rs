@@ -144,9 +144,10 @@ pub async fn install(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// The programs shipped in the Windows archive: the app, and the command line (same as on Linux).
+/// The programs shipped in the Windows archive: the app, WinmatesUpdater, and the service +
+/// command line (same as on Linux).
 #[cfg(windows)]
-pub const WINDOWS_PROGRAMS: [&str; 2] = ["winmates.exe", "archmates.exe"];
+pub const WINDOWS_PROGRAMS: [&str; 3] = ["winmates.exe", "winmates-updater.exe", "archmates.exe"];
 
 /// Windows can't overwrite a running program, but it can rename it: the old one is moved
 /// aside (deleted at the next start, see `cleanup_old_programs`) and the new one takes its name.

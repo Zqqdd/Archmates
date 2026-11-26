@@ -20,6 +20,8 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Audio headers (voice messages)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo build --locked --release
       - run: cargo build --locked --release --features app
       - run: cargo test --locked --release
@@ -41,6 +43,12 @@ jobs:
             target
           key: cargo-windows-${{ hashFiles('Cargo.lock') }}
       - run: cargo build --locked --release --features app
+      # WinmatesSetup.exe embeds the three programs built just above.
+      - name: Build WinmatesSetup.exe
+        shell: pwsh
+        run: |
+          $env:WINMATES_PAYLOAD = "$PWD\target\release"
+          cargo build --locked --release --features setup --bin winmates-setup
       - run: cargo test --locked --release
       # Test build to try before a release: Actions → this run → Artifacts → "winmates-test".
       - name: Package Winmates (test build)
@@ -49,7 +57,8 @@ jobs:
           VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           NAME="winmates-$VERSION-x86_64-windows"
           mkdir -p "dist/$NAME"
-          cp target/release/winmates.exe target/release/archmates.exe README.md LICENSE "dist/$NAME/"
+          cp target/release/winmates.exe target/release/winmates-updater.exe target/release/archmates.exe README.md LICENSE "dist/$NAME/"
+          cp target/release/winmates-setup.exe "dist/WinmatesSetup-$VERSION.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: winmates-test

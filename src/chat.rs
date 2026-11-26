@@ -7,6 +7,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,9 @@ pub struct Message {
     /// For file transfers: the file name (text holds a short description).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// For voice messages: length in seconds (`file` is the recording, deleted at restart).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<u32>,
 }
 
 fn path(paths: &Paths, code: &str) -> PathBuf {
@@ -110,4 +115,94 @@ pub fn new_id() -> String {
     let _ = getrandom::fill(&mut random);
     let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{hex}", crate::daemon::now_ms())
+}
+
+/// What `delete_conversation` removed.
+#[derive(Debug, Default)]
+pub struct Deleted {
+    pub messages: usize,
+    pub files: usize,
+}
+
+/// Deletes a conversation for good: every message, the voice messages, and every file this
+/// friend sent you (their folder in your downloads). Files *you* sent stay where they are on
+/// your PC: only the received copies are removed. Cannot be undone.
+pub fn delete_conversation(paths: &Paths, code: &str, nickname: &str) -> Result<Deleted> {
+    let messages = load(paths, code);
+    let mut deleted = Deleted { messages: messages.len(), files: 0 };
+    let downloads = crate::transfer::download_dir().join(crate::transfer::DOWNLOAD_FOLDER);
+    let voice = crate::voice::dir(paths);
+    // Received files and voice messages listed in the conversation (even if the friend was
+    // renamed since), but only inside the Archmates download folder or the voice folder.
+    for m in &messages {
+        let Some(file) = m.file.as_deref() else { continue };
+        let path = std::path::Path::new(file);
+        let ours = (m.dir == "in" && path.starts_with(&downloads)) || path.starts_with(&voice);
+        if ours && fs::remove_file(path).is_ok() {
+            deleted.files += 1;
+        }
+    }
+    // The friend's whole download folder.
+    let folder = crate::transfer::received_dir(nickname);
+    if folder.starts_with(&downloads) && folder != downloads {
+        if let Ok(entries) = fs::read_dir(&folder) {
+            deleted.files += entries.flatten().filter(|e| e.path().is_file()).count();
+        }
+        let _ = fs::remove_dir_all(&folder);
+    }
+    // Voice messages, sent or received.
+    if let Ok(entries) = fs::read_dir(&voice) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if (name.starts_with(&format!("{code}-")) || name.starts_with(&format!("sent-{code}-"))) && fs::remove_file(e.path()).is_ok() {
+                deleted.files += 1;
+            }
+        }
+    }
+    let _ = fs::remove_file(path(paths, code));
+    let _ = fs::remove_file(read_marker(paths, code));
+    Ok(deleted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_conversation_keeps_your_own_files() {
+        let base = std::env::temp_dir().join(format!("archmates-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        // Only this test reads these variables.
+        unsafe {
+            std::env::set_var("ARCHMATES_HOME", base.join("home"));
+            std::env::set_var("HOME", &base);
+            std::env::set_var("USERPROFILE", &base);
+            std::env::set_var("XDG_CONFIG_HOME", base.join("config"));
+        }
+        let paths = Paths::detect();
+        let code = "friendcode";
+        let received_dir = crate::transfer::received_dir("bob");
+        fs::create_dir_all(&received_dir).unwrap();
+        let received = received_dir.join("photo.png");
+        fs::write(&received, b"x").unwrap();
+        let mine = base.join("my-own-file.txt");
+        fs::write(&mine, b"keep me").unwrap();
+        let voice_file = crate::voice::dir(&paths).join(format!("{code}-1.wav"));
+        fs::create_dir_all(voice_file.parent().unwrap()).unwrap();
+        fs::write(&voice_file, b"x").unwrap();
+        let msg = |id: &str, dir: &str, file: Option<&Path>| Message {
+            id: id.into(), dir: dir.into(), text: "t".into(), ms: 1, delivered: true,
+            file: file.map(|f| f.to_string_lossy().into_owned()), voice: None,
+        };
+        append(&paths, code, &msg("1", "in", Some(&received))).unwrap();
+        append(&paths, code, &msg("2", "out", Some(&mine))).unwrap();
+        append(&paths, code, &msg("3", "in", None)).unwrap();
+
+        let d = delete_conversation(&paths, code, "bob").unwrap();
+        assert_eq!(d.messages, 3);
+        assert!(!received.exists() && !voice_file.exists());
+        assert!(mine.exists(), "a file you sent must never be deleted");
+        assert!(load(&paths, code).is_empty());
+        let _ = fs::remove_dir_all(&base);
+    }
 }

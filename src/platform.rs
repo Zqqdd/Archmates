@@ -127,11 +127,12 @@ pub fn install_dir() -> PathBuf {
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-/// True when Archmates (Winmates on Windows) starts by itself when you log in.
+/// True when Archmates (WinmatesUpdater on Windows) starts by itself when you log in.
 pub fn autostart_enabled() -> bool {
     #[cfg(windows)]
     {
-        reg::get_string(reg::CURRENT_USER, RUN_KEY, "Winmates").is_some()
+        reg::get_string(reg::CURRENT_USER, RUN_KEY, "WinmatesUpdater").is_some()
+            || reg::get_string(reg::CURRENT_USER, RUN_KEY, "Winmates").is_some()
     }
     #[cfg(not(windows))]
     {
@@ -144,17 +145,19 @@ pub fn autostart_enabled() -> bool {
 }
 
 /// Turns starting with the system on or off.
-/// Windows: Winmates (in the background) from the "Run" registry key of your account.
+/// Windows: WinmatesUpdater from the "Run" registry key of your account (it updates, starts the
+/// service, then opens Winmates).
 /// Linux: the systemd user service.
 pub fn set_autostart(on: bool) -> Result<()> {
     #[cfg(windows)]
     {
+        // v0.4.0 started the app itself ("Winmates"): replaced by the updater.
+        reg::delete_value(reg::CURRENT_USER, RUN_KEY, "Winmates");
         if on {
-            let app = install_dir().join("winmates.exe");
-            let app = if app.exists() { app } else { std::env::current_exe()?.with_file_name("winmates.exe") };
-            reg::set_string(reg::CURRENT_USER, RUN_KEY, "Winmates", &format!("\"{}\" --background", app.display()))
+            let updater = install_dir().join("winmates-updater.exe");
+            reg::set_string(reg::CURRENT_USER, RUN_KEY, "WinmatesUpdater", &format!("\"{}\"", updater.display()))
         } else {
-            reg::delete_value(reg::CURRENT_USER, RUN_KEY, "Winmates");
+            reg::delete_value(reg::CURRENT_USER, RUN_KEY, "WinmatesUpdater");
             Ok(())
         }
     }
@@ -168,14 +171,23 @@ pub fn set_autostart(on: bool) -> Result<()> {
     }
 }
 
+/// Windows: a Yes / No question in a standard dialog box (used by the uninstaller).
+#[cfg(windows)]
+pub fn confirm(title: &str, text: &str) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (t, c) = (wide(text), wide(title));
+    unsafe { MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+}
+
 // ── Windows registry ────────────────────────────────────────────────────────
 
 #[cfg(windows)]
 pub mod reg {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW,
-        RegGetValueW, RegSetKeyValueW,
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+        RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW,
     };
 
     pub const CURRENT_USER: HKEY = HKEY_CURRENT_USER;
@@ -217,6 +229,22 @@ pub mod reg {
         };
         anyhow::ensure!(err == ERROR_SUCCESS, "could not write the registry (error {err})");
         Ok(())
+    }
+
+    pub fn set_dword(root: HKEY, key: &str, value: &str, data: u32) -> anyhow::Result<()> {
+        let (key, value) = (wide(key), wide(value));
+        let err = unsafe {
+            RegSetKeyValueW(root, key.as_ptr(), value.as_ptr(), REG_DWORD, (&data as *const u32).cast(), 4)
+        };
+        anyhow::ensure!(err == ERROR_SUCCESS, "could not write the registry (error {err})");
+        Ok(())
+    }
+
+    pub fn delete_tree(root: HKEY, key: &str) {
+        let key = wide(key);
+        unsafe {
+            RegDeleteTreeW(root, key.as_ptr());
+        }
     }
 
     pub fn delete_value(root: HKEY, key: &str, value: &str) {

@@ -78,6 +78,11 @@ fn safe_name(name: &str) -> String {
     if cleaned.is_empty() { "file".into() } else { cleaned.chars().take(200).collect() }
 }
 
+/// Where files received from this friend are saved.
+pub fn received_dir(nickname: &str) -> PathBuf {
+    download_dir().join(DOWNLOAD_FOLDER).join(safe_name(nickname))
+}
+
 /// `name`, or `name (2)`, `name (3)`… if it already exists.
 fn free_path(dir: &Path, name: &str) -> PathBuf {
     let candidate = dir.join(name);
@@ -216,7 +221,7 @@ async fn receive(connection: &Connection, id: EndpointId, nickname: &str, on_off
     }
     send.write_all(b"accept\n").await?;
 
-    let dir = download_dir().join(DOWNLOAD_FOLDER).join(safe_name(nickname));
+    let dir = received_dir(nickname);
     tokio::fs::create_dir_all(&dir).await?;
     let target = free_path(&dir, &name);
     let partial = target.with_extension("part");

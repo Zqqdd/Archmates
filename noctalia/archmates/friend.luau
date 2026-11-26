@@ -12,6 +12,7 @@ local messages = {}
 local status = nil      -- feedback line under the input ("sent", errors…)
 local draft = ""
 local inputRev = 0      -- a new input key clears the field after sending
+local confirmDelete = false -- ⚙ → "Delete conversation": asks before deleting
 
 local function gb(bytes)
   return string.format("%.1f", (bytes or 0) / 1073741824)
@@ -123,12 +124,25 @@ local function isImage(path)
   return ext ~= nil and IMAGE_EXT[string.lower(ext)] == true and noctalia.fileExists(path)
 end
 
+local function secs(s)
+  s = s or 0
+  return string.format("%d:%02d", s // 60, s % 60)
+end
+
 local function bubble(m)
   local mine = m.dir == "out"
   local text = m.text
   if mine and not m.delivered then text = text .. "  ⏳" end
   local content = {}
-  if isImage(m.file) then
+  if m.voice then
+    -- Voice messages live until the next restart.
+    if m.file and noctalia.fileExists(m.file) then
+      table.insert(content, ui.button({ text = "▶  Voice message · " .. secs(m.voice), variant = "primary", controlSize = "sm",
+        onClick = function() noctalia.runAsync({ BIN, "voice", "play", m.file }, function(_r) end, 330000) end }))
+    else
+      table.insert(content, ui.label({ text = "🎤 Voice message · " .. secs(m.voice) .. " · expired", fontSize = 13, color = "on_surface_variant" }))
+    end
+  elseif isImage(m.file) then
     table.insert(content, ui.image({ path = m.file, width = 240, height = 170, radius = 8, fit = "cover" }))
   else
     table.insert(content, ui.label({ text = text, fontSize = 13, color = "on_surface", maxWidth = 270 }))
@@ -183,9 +197,25 @@ function render()
           ui.label({ text = subtitle, fontSize = 11, color = "on_surface_variant" }),
         }),
       }),
+      ui.button({ text = "⚙", variant = "ghost", controlSize = "sm", tooltip = "Delete conversation",
+        onClick = function() confirmDelete = not confirmDelete; render() end }),
       ui.button({ glyph = "x", variant = "ghost", controlSize = "sm", onClick = function() panel.close() end }),
     }),
   }
+
+  if confirmDelete then
+    table.insert(rows, ui.column({ gap = 8, padding = 10, radius = 12, fill = "error/0.15" }, {
+      ui.label({ text = "Delete your conversation with " .. friend.nickname .. " for good? Every message, voice message and file they sent you is deleted from this PC. This cannot be undone.",
+        fontSize = 12, color = "on_surface", maxWidth = 330 }),
+      ui.row({ gap = 8, justify = "end" }, {
+        ui.button({ text = "Cancel", variant = "ghost", controlSize = "sm", onClick = function() confirmDelete = false; render() end }),
+        ui.button({ text = "Delete", variant = "primary", controlSize = "sm", onClick = function()
+          confirmDelete = false
+          run({ BIN, "delete-chat", code, "--yes" })
+        end }),
+      }),
+    }))
+  end
 
   if p and p.stats then
     table.insert(rows, ui.row({ gap = 14 }, {
