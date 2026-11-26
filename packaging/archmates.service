@@ -1,0 +1,12 @@
+[Unit]
+Description=Archmates : présence pair à pair (vois tes amis en ligne)
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/archmates daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
