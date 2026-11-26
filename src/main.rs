@@ -6,6 +6,7 @@
 //!   archmates list                    show your friends and their status
 //!   archmates invisible on|off        invisible mode
 //!   archmates profile                 show what your friends see of you
+//!   archmates avatar <image>          set your profile picture (PNG, JPEG, WebP, GIF, max 2 MB)
 //!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
 //!   archmates update                  check whether a new version is available
 //!   archmates daemon                  run the service (normally via systemd)
@@ -55,6 +56,14 @@ enum Command {
     },
     /// Show your profile as your friends see it
     Profile,
+    /// Set your profile picture (PNG, JPEG, WebP or GIF, up to 2 MB)
+    Avatar {
+        /// Image file to use; without it, shows the current picture
+        image: Option<std::path::PathBuf>,
+        /// Remove the picture set with this command
+        #[arg(long, conflicts_with = "image")]
+        remove: bool,
+    },
     /// Universal desktop widget: auto (when Noctalia is absent), on or off
     Widget {
         #[arg(value_enum)]
@@ -163,6 +172,32 @@ async fn main() -> Result<()> {
         },
         Command::Profile => {
             println!("{}", serde_json::to_string_pretty(&profile::Profile::local())?);
+        }
+        Command::Avatar { image, remove } => {
+            if remove {
+                let _ = std::fs::remove_file(paths.avatar());
+                println!("✓ Profile picture removed.");
+            } else if let Some(image) = image {
+                let bytes = std::fs::read(&image)
+                    .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", image.display()))?;
+                let Some(kind) = profile::image_kind(&bytes) else {
+                    anyhow::bail!("{} is not a PNG, JPEG, WebP or GIF image", image.display());
+                };
+                if bytes.len() > profile::AVATAR_MAX {
+                    anyhow::bail!(
+                        "the image is {:.1} MB: the maximum is 2 MB (resize it first)",
+                        bytes.len() as f64 / 1_048_576.0
+                    );
+                }
+                config::write_atomic(&paths.avatar(), &bytes)?;
+                println!("✓ Profile picture set ({kind}, {} KB).", bytes.len() / 1024);
+                println!("  Your friends get it within a minute.");
+            }
+            let user = profile::Profile::local().user;
+            match profile::avatar_path(&user) {
+                Some(p) => println!("Current picture: {}", p.display()),
+                None => println!("No profile picture. Set one with: archmates avatar <image>"),
+            }
         }
         Command::Widget { mode } => {
             if let Some(mode) = mode {

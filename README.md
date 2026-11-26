@@ -60,6 +60,8 @@ archmates list                     # who is online
 archmates remove <nickname>        # remove a friend
 archmates invisible on|off         # invisible mode
 archmates profile                  # what your friends see of you
+archmates avatar <image>           # set your profile picture (PNG, JPEG, WebP, GIF, max 2 MB)
+archmates update                   # check whether a new version is available
 ```
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.

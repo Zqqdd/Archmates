@@ -85,16 +85,29 @@ fn window_manager() -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// Profile picture: $ARCHMATES_AVATAR, else the system account picture, else ~/.face.
+/// Profile picture, first found: $ARCHMATES_AVATAR, the one set with `archmates avatar`,
+/// the system account picture, ~/.face.
 pub fn avatar_path(user: &str) -> Option<PathBuf> {
     let candidates = [
         std::env::var("ARCHMATES_AVATAR").ok().map(PathBuf::from),
+        Some(crate::config::Paths::detect().avatar()),
         Some(PathBuf::from(format!("/var/lib/AccountsService/icons/{user}"))),
         std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".face")),
     ];
     candidates.into_iter().flatten().find(|p| {
         fs::metadata(p).map(|m| m.is_file() && (m.len() as usize) <= AVATAR_MAX).unwrap_or(false)
     })
+}
+
+/// Image type from its first bytes, if it is one the widgets can show.
+pub fn image_kind(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some("PNG"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("JPEG"),
+        [b'G', b'I', b'F', b'8', ..] => Some("GIF"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("WebP"),
+        _ => None,
+    }
 }
 
 pub fn read_avatar(user: &str) -> Option<Vec<u8>> {

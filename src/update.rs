@@ -55,7 +55,10 @@ pub fn how_to_update() -> String {
     if exe.starts_with("/usr") {
         "paru -Syu   (or: yay -Syu)".into()
     } else {
-        "cd <your archmates folder> && git pull && ./installer.sh".into()
+        format!(
+            "download the latest archive from https://github.com/{REPO}/releases/latest \
+             and run ./installer.sh in it (or, from a git clone: git pull && ./installer.sh)"
+        )
     }
 }
 

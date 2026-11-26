@@ -4,6 +4,7 @@
 //!   ~/.local/share/archmates/secret.key     your identity (32 bytes, readable by you only)
 //!   ~/.local/share/archmates/friends.toml   your friends list
 //!   ~/.local/share/archmates/invisible      present = invisible mode
+//!   ~/.local/share/archmates/avatar         your profile picture (set with `archmates avatar`)
 //!   ~/.local/share/archmates/widget         universal widget mode: auto, on or off
 //!   ~/.cache/archmates/state.json           friends' status, read by the Noctalia widget
 //!   ~/.cache/archmates/avatars/             friends' profile pictures
@@ -48,6 +49,7 @@ impl Paths {
     pub fn friends(&self) -> PathBuf { self.data.join("friends.toml") }
     pub fn invisible(&self) -> PathBuf { self.data.join("invisible") }
     pub fn widget_mode(&self) -> PathBuf { self.data.join("widget") }
+    pub fn avatar(&self) -> PathBuf { self.data.join("avatar") }
     pub fn state(&self) -> PathBuf { self.cache.join("state.json") }
     pub fn avatars(&self) -> PathBuf { self.cache.join("avatars") }
 
