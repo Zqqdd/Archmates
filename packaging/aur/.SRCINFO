@@ -1,0 +1,19 @@
+pkgbase = archmates-bin
+	pkgdesc = Peer-to-peer friends list for Arch Linux: see when your friends are online
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/Zqqdd/Archmates
+	install = archmates.install
+	arch = x86_64
+	license = MIT
+	depends = glibc
+	depends = gcc-libs
+	optdepends = noctalia: desktop widget
+	optdepends = libnotify: notifications when a friend comes online
+	optdepends = python: automatic widget placement on Hyprland
+	provides = archmates
+	conflicts = archmates
+	source = https://github.com/Zqqdd/Archmates/releases/download/v0.2.0/archmates-0.2.0-x86_64-linux.tar.gz
+	sha256sums = 8095ee2b73a7190282a2baf4245140b234505775fb9f79427fa235e53241a6d4
+
+pkgname = archmates-bin
