@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,18 +87,67 @@ fn window_manager() -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// Profile picture, first found: $ARCHMATES_AVATAR, the one set with `archmates avatar`,
-/// the system account picture, ~/.face.
-pub fn avatar_path(user: &str) -> Option<PathBuf> {
-    let candidates = [
+/// Largest source picture we accept (it is shrunk before being sent).
+const SOURCE_MAX: u64 = 30 * 1024 * 1024;
+/// Size of the picture sent to friends (square, in pixels).
+const AVATAR_SIZE: u32 = 256;
+
+/// Picture set in the system account settings (KDE, GNOME, Noctalia… all use AccountsService).
+/// Asked over D-Bus because its config folder is not readable by users.
+fn accounts_service_icon(user: &str) -> Option<PathBuf> {
+    fn quoted(output: &[u8]) -> Option<String> {
+        let text = String::from_utf8_lossy(output);
+        let start = text.find('"')? + 1;
+        let end = start + text[start..].find('"')?;
+        Some(text[start..end].to_string())
+    }
+    let found = std::process::Command::new("busctl")
+        .args(["--system", "call", "org.freedesktop.Accounts", "/org/freedesktop/Accounts",
+               "org.freedesktop.Accounts", "FindUserByName", "s", user])
+        .output()
+        .ok()?;
+    let object = quoted(&found.stdout)?;
+    let icon = std::process::Command::new("busctl")
+        .args(["--system", "get-property", "org.freedesktop.Accounts", &object,
+               "org.freedesktop.Accounts.User", "IconFile"])
+        .output()
+        .ok()?;
+    quoted(&icon.stdout).filter(|p| !p.is_empty()).map(PathBuf::from)
+}
+
+/// Every place a profile picture can be, in order of preference.
+fn avatar_candidates(user: &str) -> Vec<PathBuf> {
+    let home = std::env::var("HOME").map(PathBuf::from).ok();
+    [
         std::env::var("ARCHMATES_AVATAR").ok().map(PathBuf::from),
         Some(crate::config::Paths::detect().avatar()),
+        accounts_service_icon(user),
         Some(PathBuf::from(format!("/var/lib/AccountsService/icons/{user}"))),
-        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".face")),
-    ];
-    candidates.into_iter().flatten().find(|p| {
-        fs::metadata(p).map(|m| m.is_file() && (m.len() as usize) <= AVATAR_MAX).unwrap_or(false)
-    })
+        home.as_ref().map(|h| h.join(".face")),
+        home.as_ref().map(|h| h.join(".face.icon")),
+        Some(PathBuf::from(format!("/usr/share/sddm/faces/{user}.face.icon"))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Profile picture source, first found: $ARCHMATES_AVATAR, the one set with `archmates avatar`,
+/// the system account picture (AccountsService), ~/.face, ~/.face.icon, the SDDM face.
+pub fn avatar_path(user: &str) -> Option<PathBuf> {
+    // Looked up at most once a minute: it runs on every exchange with a friend.
+    static CACHE: Mutex<Option<(Instant, Option<PathBuf>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, found)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return found.clone();
+        }
+    }
+    let found = avatar_candidates(user).into_iter().find(|p| {
+        fs::metadata(p).map(|m| m.is_file() && m.len() > 0 && m.len() <= SOURCE_MAX).unwrap_or(false)
+    });
+    *cache = Some((Instant::now(), found.clone()));
+    found
 }
 
 /// Image type from its first bytes, if it is one the widgets can show.
@@ -110,8 +161,42 @@ pub fn image_kind(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Crops the picture to a square and shrinks it to AVATAR_SIZE, as PNG.
+fn thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let small = img.resize_to_fill(AVATAR_SIZE, AVATAR_SIZE, image::imageops::FilterType::Lanczos3);
+    let mut out = std::io::Cursor::new(Vec::new());
+    small.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
+/// The picture sent to friends: a small square PNG, cached until the source file changes.
 pub fn read_avatar(user: &str) -> Option<Vec<u8>> {
-    avatar_path(user).and_then(|p| fs::read(p).ok())
+    let source = avatar_path(user)?;
+    let meta = fs::metadata(&source).ok()?;
+    let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+    let key = fingerprint(format!("{}|{}|{:?}", source.display(), meta.len(), mtime).as_bytes());
+    let cache_dir = crate::config::Paths::detect().cache;
+    let cached = cache_dir.join(format!("my-avatar-{key}.png"));
+    if let Ok(bytes) = fs::read(&cached) {
+        return Some(bytes);
+    }
+    let original = fs::read(&source).ok()?;
+    let small = match thumbnail(&original) {
+        Some(t) => t,
+        // Unknown to the decoder but already small and in a usable format: send as is.
+        None if original.len() <= AVATAR_MAX && image_kind(&original).is_some() => original,
+        None => return None,
+    };
+    if let Ok(entries) = fs::read_dir(&cache_dir) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with("my-avatar-") {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    let _ = crate::config::write_atomic(&cached, &small);
+    Some(small)
 }
 
 /// 64-bit FNV-1a fingerprint: simple, stable, good enough to detect a change.

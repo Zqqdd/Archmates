@@ -6,7 +6,7 @@
 //!   archmates list                    show your friends and their status
 //!   archmates invisible on|off        invisible mode
 //!   archmates profile                 show what your friends see of you
-//!   archmates avatar <image>          set your profile picture (PNG, JPEG, WebP, GIF, max 2 MB)
+//!   archmates avatar [<image>]        show or set your profile picture
 //!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
 //!   archmates update                  check whether a new version is available
 //!   archmates daemon                  run the service (normally via systemd)
@@ -56,7 +56,7 @@ enum Command {
     },
     /// Show your profile as your friends see it
     Profile,
-    /// Set your profile picture (PNG, JPEG, WebP or GIF, up to 2 MB)
+    /// Show or set your profile picture (default: your system account picture)
     Avatar {
         /// Image file to use; without it, shows the current picture
         image: Option<std::path::PathBuf>,
@@ -183,11 +183,8 @@ async fn main() -> Result<()> {
                 let Some(kind) = profile::image_kind(&bytes) else {
                     anyhow::bail!("{} is not a PNG, JPEG, WebP or GIF image", image.display());
                 };
-                if bytes.len() > profile::AVATAR_MAX {
-                    anyhow::bail!(
-                        "the image is {:.1} MB: the maximum is 2 MB (resize it first)",
-                        bytes.len() as f64 / 1_048_576.0
-                    );
+                if bytes.len() > 30 * 1024 * 1024 {
+                    anyhow::bail!("the image is larger than 30 MB");
                 }
                 config::write_atomic(&paths.avatar(), &bytes)?;
                 println!("✓ Profile picture set ({kind}, {} KB).", bytes.len() / 1024);
@@ -195,8 +192,17 @@ async fn main() -> Result<()> {
             }
             let user = profile::Profile::local().user;
             match profile::avatar_path(&user) {
-                Some(p) => println!("Current picture: {}", p.display()),
-                None => println!("No profile picture. Set one with: archmates avatar <image>"),
+                Some(p) => match profile::read_avatar(&user) {
+                    Some(sent) => println!(
+                        "Current picture: {}\n  Sent to your friends as a 256×256 image ({} KB).",
+                        p.display(),
+                        sent.len() / 1024
+                    ),
+                    None => println!("Found {}, but it is not a readable image.", p.display()),
+                },
+                None => println!(
+                    "No profile picture found (system account picture, ~/.face…).\n  Set one with: archmates avatar <image>"
+                ),
             }
         }
         Command::Widget { mode } => {

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.105"
 clap = { version = "4.6.10", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 iroh = "1.5.0"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 serde = { version = "1.0.229", features = ["derive"] }

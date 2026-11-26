@@ -11,7 +11,7 @@ directly over encrypted connections, powered by [Iroh](https://iroh.computer).
 
 ## Install
 
-### From the AUR (recommended, updates come with your system updates)
+### From the AUR (coming soon: updates will come with your system updates)
 
 ```bash
 paru -S archmates-bin
@@ -60,11 +60,23 @@ archmates list                     # who is online
 archmates remove <nickname>        # remove a friend
 archmates invisible on|off         # invisible mode
 archmates profile                  # what your friends see of you
-archmates avatar <image>           # set your profile picture (PNG, JPEG, WebP, GIF, max 2 MB)
+archmates avatar [<image>]         # show or set your profile picture
 archmates update                   # check whether a new version is available
 ```
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
+
+### Profile picture
+
+Your system account picture is sent automatically: the one set in KDE / GNOME settings, Noctalia, or any
+tool using AccountsService, or else `~/.face` / `~/.face.icon`. Large photos are cropped and shrunk to a
+256×256 picture before being sent. To use another picture just for archmates:
+
+```bash
+archmates avatar ~/Pictures/me.png   # PNG, JPEG, WebP or GIF
+archmates avatar                     # shows which picture is used
+archmates avatar --remove            # back to the system picture
+```
 
 ### Universal widget (without Noctalia)
 
@@ -107,20 +119,70 @@ No friend at hand? Start a fake friend on your own machine:
 It shows up online in the widget and in `archmates list` within ~30 s. Press Ctrl+C to stop it: it is
 removed from your list automatically.
 
-## Updates
+## Updating
 
-- **AUR install**: archmates is updated with the rest of your system (`paru -Syu`).
-- **Source install**: `git pull && ./installer.sh`.
-- Once a day, the service checks GitHub for a new release. When there is one, you get a notification and the
-  widget shows "Update available". Nothing is downloaded or installed automatically: updates always go through
-  pacman or the installer, so you can see what lands on your machine. Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn
-  the check off, or run `archmates update` to check by hand.
-- After an update, the running service notices that its program was replaced and restarts itself.
+Your friend code, your friends list and your settings are kept: you never need to add your friends again.
 
-New versions are published by pushing a tag: GitHub Actions builds the release archive used by the AUR package.
+First, check which version you have and whether a new one exists:
 
 ```bash
-# bump the version in Cargo.toml first, then:
+archmates update
+```
+
+Then follow the steps for the way you installed archmates.
+
+### You installed from a release archive
+
+1. Download the latest `archmates-<version>-x86_64-linux.tar.gz` from the
+   [latest release](https://github.com/Zqqdd/Archmates/releases/latest).
+2. In the folder where you downloaded it, run:
+
+   ```bash
+   tar -xzf archmates-*-x86_64-linux.tar.gz
+   cd archmates-*-x86_64-linux
+   ./installer.sh
+   ```
+
+3. Check that it worked:
+
+   ```bash
+   archmates update      # should say "You are up to date"
+   ```
+
+> **Coming from v0.2.0 with a service you created by hand?** Run `systemctl --user disable archmates` once
+> before `./installer.sh`, so the installer can put the right service in place.
+
+### You installed from source (git clone)
+
+```bash
+cd Archmates          # the folder you cloned
+git pull
+./installer.sh
+```
+
+### You installed from the AUR
+
+archmates is updated with the rest of your system:
+
+```bash
+paru -Syu             # or: yay -Syu
+```
+
+### What happens automatically
+
+- Once a day, the service checks GitHub for a new release. When there is one, you get a notification and the
+  widget shows "Update available". Nothing is downloaded or installed automatically: updates always go through
+  the installer or pacman, so you can see what lands on your machine. Set `ARCHMATES_NO_UPDATE_CHECK=1` to
+  turn the check off.
+- After an update, the running service notices that its program was replaced and restarts itself
+  (within ~30 s): there is nothing to restart by hand.
+
+### Publishing a new version (maintainers)
+
+Bump the version in `Cargo.toml` (and `noctalia/archmates/plugin.toml`), run `cargo build` to refresh
+`Cargo.lock`, commit, then push a tag. GitHub Actions builds and publishes the release archive:
+
+```bash
 git tag v0.3.0 && git push origin v0.3.0
 ```
 
