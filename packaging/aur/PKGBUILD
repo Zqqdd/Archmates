@@ -16,7 +16,7 @@ provides=('archmates')
 conflicts=('archmates')
 install=archmates.install
 source=("$url/releases/download/v$pkgver/archmates-$pkgver-x86_64-linux.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('4baf0aab50276dfa3bf49f66df9ddc2036b9523e39c5915443f843aafa493901')
 
 package() {
   cd "archmates-$pkgver-x86_64-linux"
