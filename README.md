@@ -52,6 +52,17 @@ archmates profile                  # what your friends see of you
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
 
+### Try it alone
+
+No friend at hand? Start a fake friend on your own machine:
+
+```bash
+./scripts/demo-friend.sh
+```
+
+It shows up online in the widget and in `archmates list` within ~30 s. Press Ctrl+C to stop it: it is
+removed from your list automatically.
+
 ## Updates
 
 - **AUR install**: archmates is updated with the rest of your system (`paru -Syu`).
