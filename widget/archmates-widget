@@ -11,8 +11,9 @@ KDE Plasma, niri, river, labwc, Wayfire... (not GNOME).
 Needs: gtk4, gtk4-layer-shell, python-gobject
     sudo pacman -S --needed gtk4 gtk4-layer-shell python-gobject
 
-Customise the look by creating ~/.config/archmates/widget.css (loaded after the
-default style below), and the position with ~/.config/archmates/widget.toml:
+Colors follow your theme: pywal / wallust colors if you use them, else your GTK theme
+(libadwaita, matugen...). Customise the look further with ~/.config/archmates/widget.css
+(loaded after the default style below), and the position with ~/.config/archmates/widget.toml:
     corner = "top-right"      # top-left, top-right, bottom-left, bottom-right
     margin_x = 40
     margin_y = 60
@@ -58,14 +59,15 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "archma
 REFRESH_SECONDS = 5
 WIDTH = 300
 
+# Colors come from @bg, @fg and @accent, filled in from the user's theme (see theme_colors).
 DEFAULT_CSS = """
 window.archmates { background: transparent; }
 .card {
-  background-color: rgba(20, 20, 24, 0.30);
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  background-color: alpha(@bg, 0.35);
+  border: 1px solid alpha(@fg, 0.28);
   border-radius: 18px;
   padding: 16px;
-  color: #ece6e1;
+  color: @fg;
 }
 .title { font-family: monospace; font-weight: bold; font-size: 14px; color: @accent; }
 .count { font-family: monospace; font-size: 11px; opacity: 0.75; }
@@ -73,18 +75,61 @@ window.archmates { background: transparent; }
 .subtitle { font-size: 11px; opacity: 0.75; }
 .warning { font-size: 11px; color: #f2b8b5; }
 .notice { font-size: 11px; color: @accent; }
-.avatar { border-radius: 18px; background-color: rgba(255, 255, 255, 0.12); }
+.avatar { border-radius: 18px; background-color: alpha(@fg, 0.12); }
 .offline-avatar { opacity: 0.45; }
 .dot { min-width: 8px; min-height: 8px; border-radius: 4px; }
 .dot.online { background-color: @accent; }
 .dot.pending { background-color: #e6c07b; }
-.dot.offline { background-color: rgba(255, 255, 255, 0.35); }
-separator { background-color: rgba(255, 255, 255, 0.18); min-height: 1px; }
+.dot.offline { background-color: alpha(@fg, 0.35); }
+separator { background-color: alpha(@fg, 0.18); min-height: 1px; }
 button.copy { font-size: 11px; padding: 2px 10px; border-radius: 10px;
-  background: rgba(255, 255, 255, 0.08); border: none; color: inherit; box-shadow: none; }
-button.copy:hover { background: rgba(255, 255, 255, 0.18); }
+  background: alpha(@fg, 0.08); border: none; color: inherit; box-shadow: none; }
+button.copy:hover { background: alpha(@fg, 0.18); }
 """
-ACCENT = "@define-color accent #f0a868;\n"
+FALLBACK = {"bg": "#141418", "fg": "#ece6e1", "accent": "#f0a868"}
+WAL_COLORS = HOME / ".cache" / "wal" / "colors.json"
+
+
+def theme_colors(widget):
+    """bg / fg / accent from, in order: pywal (~/.cache/wal/colors.json, also written by wallust),
+    the GTK theme (incl. libadwaita and matugen-generated colors), then built-in defaults."""
+    colors = dict(FALLBACK)
+    try:
+        wal = json.loads(WAL_COLORS.read_text())
+        colors.update(bg=wal["special"]["background"], fg=wal["special"]["foreground"],
+                      accent=wal["colors"].get("color4") or wal["colors"]["color1"])
+        return colors
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    import warnings
+    names = {
+        "bg": ("window_bg_color", "theme_bg_color"),
+        "fg": ("window_fg_color", "theme_fg_color"),
+        "accent": ("accent_bg_color", "accent_color", "theme_selected_bg_color"),
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        ctx = widget.get_style_context()
+        for key, candidates in names.items():
+            for name in candidates:
+                found, rgba = ctx.lookup_color(name)
+                if found:
+                    colors[key] = "#{:02x}{:02x}{:02x}".format(
+                        round(rgba.red * 255), round(rgba.green * 255), round(rgba.blue * 255))
+                    break
+    return colors
+
+
+def theme_signature():
+    """Changes whenever the theme may have changed, to recolor the widget live."""
+    settings = Gtk.Settings.get_default()
+    try:
+        wal = WAL_COLORS.stat().st_mtime
+    except OSError:
+        wal = None
+    return (settings.props.gtk_theme_name, settings.props.gtk_application_prefer_dark_theme, wal)
+
+
 ORDER = {"online": 0, "pending": 1, "offline": 2}
 
 
@@ -150,11 +195,16 @@ def avatar(friend):
     if friend.get("status") != "online":
         box.add_css_class("offline-avatar")
     path = friend.get("avatar")
+    texture = None
     if path and os.path.exists(path):
-        pic = Gtk.Picture.new_for_filename(path)
-        pic.set_content_fit(Gtk.ContentFit.COVER)
-        pic.set_size_request(36, 36)
-        pic.set_can_shrink(True)
+        try:
+            texture = Gdk.Texture.new_from_filename(path)
+        except GLib.Error:
+            texture = None
+    if texture is not None:
+        # Gtk.Image draws the picture at a fixed size (a Gtk.Picture would grow to the image size).
+        pic = Gtk.Image.new_from_paintable(texture)
+        pic.set_pixel_size(36)
         box.append(pic)
     else:
         icon = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
@@ -233,10 +283,25 @@ class Widget(Gtk.ApplicationWindow):
         self.card.add_css_class("card")
         self.card.set_size_request(WIDTH, -1)
         self.set_child(self.card)
+        self.css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.signature = None
         self.refresh()
         GLib.timeout_add_seconds(REFRESH_SECONDS, self.refresh)
 
+    def apply_theme(self):
+        signature = theme_signature()
+        if signature == self.signature:
+            return
+        self.signature = signature
+        c = theme_colors(self)
+        self.css.load_from_string(
+            f"@define-color bg {c['bg']};\n@define-color fg {c['fg']};\n@define-color accent {c['accent']};\n"
+            + DEFAULT_CSS)
+
     def refresh(self):
+        self.apply_theme()
         while (child := self.card.get_first_child()) is not None:
             self.card.remove(child)
         state = load_state()
@@ -279,10 +344,7 @@ class Widget(Gtk.ApplicationWindow):
 
 
 def on_activate(app):
-    css = Gtk.CssProvider()
-    css.load_from_string(ACCENT + DEFAULT_CSS)
     display = Gdk.Display.get_default()
-    Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     user_css = CONFIG_DIR / "widget.css"
     if user_css.exists():
         custom = Gtk.CssProvider()

@@ -98,7 +98,10 @@ margin_y = 60
 output = "DP-1"        # screen to use (default: the main screen)
 ```
 
-and its look with `~/.config/archmates/widget.css` (GTK CSS, loaded after the default style).
+Its colors follow your theme automatically, and update live when it changes: your pywal / wallust colors if
+you use them (`~/.cache/wal/colors.json`), otherwise your GTK theme (including libadwaita and
+matugen-generated colors). For full control, add `~/.config/archmates/widget.css` (GTK CSS, loaded after the
+default style; `@bg`, `@fg` and `@accent` hold the theme colors).
 
 ### Try it alone
 
