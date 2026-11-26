@@ -67,16 +67,7 @@ local function friendRow(f)
   local unread = f.unread or 0
   return ui.row({ key = f.code, gap = 10, align = "center", tooltip = tooltip, onClick = function()
     noctalia.state.set("selected", f.code)
-    -- The movable chat panel (GTK layer-shell); Noctalia's own panel if it cannot start.
-    local chat = noctalia.expandPath("~/.local/bin/archmates-widget")
-    if not noctalia.fileExists(chat) then chat = "/usr/bin/archmates-widget" end
-    if noctalia.fileExists(chat) then
-      noctalia.runAsync({ chat, "--chat-only", "--friend", f.code }, function(r)
-        if r.exitCode ~= 0 then noctalia.togglePanel("archmates/archmates:friend") end
-      end, 86400000)
-    else
-      noctalia.togglePanel("archmates/archmates:friend")
-    end
+    noctalia.togglePanel("archmates/archmates:friend")
   end }, {
     avatar(f),
     ui.column({ gap = 1, flexGrow = 1 }, {

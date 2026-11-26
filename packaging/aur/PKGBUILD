@@ -1,6 +1,6 @@
 # Maintainer: Zqqdd
 pkgname=archmates-bin
-pkgver=0.3.3
+pkgver=0.3.4
 pkgrel=1
 pkgdesc="Peer-to-peer friends list for Arch Linux: see when your friends are online"
 arch=('x86_64')

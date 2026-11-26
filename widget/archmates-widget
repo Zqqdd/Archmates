@@ -87,7 +87,22 @@ button.copy { font-size: 11px; padding: 2px 10px; border-radius: 10px;
   background: alpha(@fg, 0.08); border: none; color: inherit; box-shadow: none; }
 button.copy:hover { background: alpha(@fg, 0.18); }
 window.archmates-chat { background: transparent; }
-.chat-card { background-color: alpha(@bg, 0.92); }
+/* Same look as the Noctalia friend panel; translucent so the compositor blurs behind it */
+.chat-card { background-color: alpha(@bg, 0.72); border: 1px solid alpha(@fg, 0.22); border-radius: 20px; padding: 16px; }
+.chat-name { font-size: 17px; font-weight: bold; }
+.avatar-big { border-radius: 26px; }
+.stat-name { font-size: 11px; opacity: 0.75; }
+.stat-value { font-size: 11px; }
+.stat-pct { font-size: 11px; font-weight: bold; color: @accent; }
+levelbar trough { min-height: 5px; border-radius: 3px; background: alpha(@fg, 0.15); }
+levelbar block { min-height: 5px; border-radius: 3px; }
+.bubble-text { font-size: 13px; }
+.empty { font-size: 12px; opacity: 0.7; margin: 4px; }
+button.ghost { background: transparent; border: none; box-shadow: none; color: inherit; border-radius: 10px; min-width: 32px; min-height: 32px; }
+button.ghost:hover { background: alpha(@fg, 0.10); }
+button.send { background: @accent; color: @bg; border: none; box-shadow: none; border-radius: 10px; min-width: 34px; min-height: 34px; }
+entry.chat-entry { min-height: 34px; border-radius: 10px; border: 1px solid alpha(@fg, 0.25); background: alpha(@bg, 0.35); padding: 0 10px; }
+entry.chat-entry:focus-within { border-color: @accent; }
 .chat-image { border-radius: 8px; }
 .offer { padding: 10px; border-radius: 12px; background-color: alpha(@accent, 0.15); }
 button.accept { background: alpha(@accent, 0.45); }
@@ -96,7 +111,7 @@ button.accept { background: alpha(@accent, 0.45); }
 .bubble.theirs { background-color: alpha(@fg, 0.10); }
 .time { font-size: 9px; opacity: 0.6; }
 .friend-row:hover { background-color: alpha(@fg, 0.06); border-radius: 10px; }
-entry { background: alpha(@fg, 0.08); color: @fg; border: none; border-radius: 10px; }
+entry { color: @fg; }
 levelbar block.filled { background-color: @accent; }
 levelbar block.empty { background-color: alpha(@fg, 0.15); }
 """
@@ -201,9 +216,11 @@ def label(text, *classes, xalign=0.0):
     return lbl
 
 
-def avatar(friend):
+def avatar(friend, size=36):
     box = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.CENTER, hexpand=False)
-    box.set_size_request(36, 36)
+    box.set_size_request(size, size)
+    if size != 36:
+        box.add_css_class("avatar-big")
     box.set_overflow(Gtk.Overflow.HIDDEN)
     box.add_css_class("avatar")
     if friend.get("status") != "online":
@@ -218,12 +235,12 @@ def avatar(friend):
     if texture is not None:
         # Gtk.Image draws the picture at a fixed size (a Gtk.Picture would grow to the image size).
         pic = Gtk.Image.new_from_paintable(texture)
-        pic.set_pixel_size(36)
+        pic.set_pixel_size(size)
         box.append(pic)
     else:
         icon = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
-        icon.set_pixel_size(18)
-        icon.set_size_request(36, 36)
+        icon.set_pixel_size(size // 2)
+        icon.set_size_request(size, size)
         box.append(icon)
     return box
 
@@ -272,29 +289,48 @@ LAST_DRAG = 0.0
 
 
 def make_draggable(window, handle, vertical, horizontal, on_end=None):
-    """Move a layer-shell window by dragging `handle` (changes its margins from the anchored edges)."""
+    """Move a layer-shell window by dragging `handle`, keeping the grabbed point under the mouse.
+
+    Offsets are measured in the window's own coordinates, which shift as the window moves; so the
+    window is moved at most once per frame, and pointer events from before that move are ignored.
+    Without this, the window lags and bounces behind the mouse."""
     drag = Gtk.GestureDrag()
-    start = {}
+    state = {"active": False, "offset": None, "waiting": False, "moved": 0}
+
+    def sign(edge, d):
+        return d if edge in (LayerShell.Edge.LEFT, LayerShell.Edge.TOP) else -d
+
+    def tick(_widget, _clock):
+        if not state["active"]:
+            return GLib.SOURCE_REMOVE
+        if state["waiting"]:
+            state["waiting"] = False          # the previous move is now on screen
+        elif state["offset"] is not None:
+            dx, dy = state["offset"]
+            state["offset"] = None
+            h = LayerShell.get_margin(window, horizontal) + sign(horizontal, dx)
+            v = LayerShell.get_margin(window, vertical) + sign(vertical, dy)
+            LayerShell.set_margin(window, horizontal, max(0, int(round(h))))
+            LayerShell.set_margin(window, vertical, max(0, int(round(v))))
+            state["moved"] += abs(dx) + abs(dy)
+            state["waiting"] = True
+        return GLib.SOURCE_CONTINUE
 
     def begin(_g, _x, _y):
-        start["v"] = LayerShell.get_margin(window, vertical)
-        start["h"] = LayerShell.get_margin(window, horizontal)
+        state.update(active=True, offset=None, waiting=False, moved=0)
+        handle.add_tick_callback(tick)
 
     def update(_g, dx, dy):
-        if not start:
-            return
-        h = start["h"] + (dx if horizontal == LayerShell.Edge.LEFT else -dx)
-        v = start["v"] + (dy if vertical == LayerShell.Edge.TOP else -dy)
-        LayerShell.set_margin(window, horizontal, max(0, int(h)))
-        LayerShell.set_margin(window, vertical, max(0, int(v)))
+        if not state["waiting"]:
+            state["offset"] = (dx, dy)
 
-    def end(_g, dx, dy):
+    def end(_g, _dx, _dy):
         global LAST_DRAG
-        if abs(dx) + abs(dy) > 6:
+        state["active"] = False
+        if state["moved"] > 6:
             LAST_DRAG = time.time()  # so the click that ends a drag does not open a chat
         if on_end:
             on_end(LayerShell.get_margin(window, vertical), LayerShell.get_margin(window, horizontal))
-        start.clear()
 
     drag.connect("drag-begin", begin)
     drag.connect("drag-update", update)
@@ -337,16 +373,26 @@ def gb(n):
 def stat_bar(name, used, total):
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
     top = Gtk.Box(spacing=6)
-    top.append(label(name, "subtitle"))
-    value = label(f"{gb(used)} / {gb(total)} GB", "subtitle")
+    top.append(label(name, "stat-name"))
+    value = label(f"{gb(used)} / {gb(total)} GB", "stat-value")
     value.set_hexpand(True)
     top.append(value)
     pct = used / total if total else 0
-    top.append(label(f"{round(pct * 100)}%", "nickname", xalign=1.0))
+    top.append(label(f"{round(pct * 100)}%", "stat-pct", xalign=1.0))
     box.append(top)
     level = Gtk.LevelBar(min_value=0, max_value=1, value=min(pct, 1))
     box.append(level)
     return box
+
+
+def clear_opaque_region(window):
+    """Tell the compositor the panel is see-through, so it blurs what is behind it."""
+    import warnings
+    surface = window.get_surface()
+    if surface is not None and hasattr(surface, "set_opaque_region"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            surface.set_opaque_region(None)
 
 
 CHAT_W, CHAT_H = 400, 560
@@ -363,6 +409,7 @@ class FriendWindow(Gtk.Window):
         self.set_resizable(False)
         LayerShell.init_for_window(self)
         LayerShell.set_namespace(self, "archmates-chat")
+        self.connect("realize", lambda w: clear_opaque_region(w))
         LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
         LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.ON_DEMAND)
         monitor = pick_monitor(load_position().get("output"))
@@ -399,14 +446,15 @@ class FriendWindow(Gtk.Window):
 
         bottom = Gtk.Box(spacing=6)
         attach = Gtk.Button(icon_name="mail-attachment-symbolic", tooltip_text="Send a file")
-        attach.add_css_class("copy")
+        attach.add_css_class("ghost")
         attach.connect("clicked", lambda _b: self.pick_file())
         bottom.append(attach)
         self.entry = Gtk.Entry(hexpand=True, placeholder_text="Message…")
+        self.entry.add_css_class("chat-entry")
         self.entry.connect("activate", lambda _e: self.send_message())
         bottom.append(self.entry)
         send = Gtk.Button(icon_name="mail-send-symbolic")
-        send.add_css_class("copy")
+        send.add_css_class("send")
         send.connect("clicked", lambda _b: self.send_message())
         bottom.append(send)
         root.append(bottom)
@@ -484,18 +532,23 @@ class FriendWindow(Gtk.Window):
         p = f.get("profile") or {}
         self.set_title(f"Archmates — {f.get('nickname')}")
         top = Gtk.Box(spacing=12)
-        pic = avatar(f)
-        top.append(pic)
+        top.append(avatar(f, 52))
         col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.CENTER)
-        col.append(label(f.get("nickname", "?"), "title"))
+        col.append(label(f.get("nickname", "?"), "chat-name"))
         if p:
             col.append(label(f"{p['user']}@{p['host']} · {p['distro']}", "subtitle"))
         status = f.get("status")
-        col.append(label("online" if status == "online" else "hasn't added you yet" if status == "pending"
-                         else f"last seen {ago(f['last_seen_ms'])}" if f.get("last_seen_ms") else "offline", "subtitle"))
+        line = Gtk.Box(spacing=6)
+        dot = Gtk.Box(valign=Gtk.Align.CENTER)
+        dot.add_css_class("dot")
+        dot.add_css_class("online" if status == "online" else "offline")
+        line.append(dot)
+        line.append(label("online" if status == "online" else "hasn't added you yet" if status == "pending"
+                          else f"last seen {ago(f['last_seen_ms'])}" if f.get("last_seen_ms") else "offline", "subtitle"))
+        col.append(line)
         top.append(col)
         close = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START)
-        close.add_css_class("copy")
+        close.add_css_class("ghost")
         close.connect("clicked", lambda _b: self.close())
         top.append(close)
         self.header.append(top)
@@ -520,7 +573,7 @@ class FriendWindow(Gtk.Window):
             while (child := self.messages.get_first_child()) is not None:
                 self.messages.remove(child)
             if not messages:
-                self.messages.append(label("No messages yet. Say hi!", "subtitle"))
+                self.messages.append(label("No messages yet. Say hi!", "empty"))
             for m in messages:
                 mine = m.get("dir") == "out"
                 b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
@@ -533,6 +586,7 @@ class FriendWindow(Gtk.Window):
                     b.append(picture)
                 else:
                     msg = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=32, selectable=True)
+                    msg.add_css_class("bubble-text")
                     msg.set_wrap_mode(2)  # Pango.WrapMode.WORD_CHAR: long words wrap too
                     b.append(msg)
                 b.append(label(ago(m.get("ms", 0)), "time"))

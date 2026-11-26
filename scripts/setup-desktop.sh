@@ -80,7 +80,7 @@ place_widget() {
 add_blur_rule() {
   command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1 || return 0
   local dir=~/.config/hypr
-  if grep -rqs "archmates-widget" "$dir"; then
+  if grep -rqs "archmates-glass-v3" "$dir"; then
     return 0   # already there
   fi
 
@@ -88,14 +88,21 @@ add_blur_rule() {
   if [[ -f "$dir/hyprland.lua" ]]; then
     file="$dir/hyprland.lua"
     rule='
--- archmates: frosted glass behind the archmates widget (universal or Noctalia)
-hl.layer_rule({ name = "archmates-glass", match = { namespace = "^(archmates-widget|noctalia-desktop-widget-.*)$" }, blur = true, ignore_alpha = 0.05 })'
+-- archmates: frosted glass behind the widgets and the chat panel (archmates-glass-v3)
+-- One rule per surface: Hyprland Lua rules do not accept "(a|b)" patterns.
+hl.layer_rule({ name = "archmates-glass-v3-widget", match = { namespace = "^archmates-widget$" }, blur = true, ignore_alpha = 0.05 })
+hl.layer_rule({ name = "archmates-glass-v3-chat", match = { namespace = "^archmates-chat$" }, blur = true, ignore_alpha = 0.05 })
+hl.layer_rule({ name = "archmates-glass-v3-noctalia", match = { namespace = "^noctalia-desktop-widget-.*" }, blur = true, ignore_alpha = 0.05 })'
   elif [[ -f "$dir/hyprland.conf" ]]; then
     file="$dir/hyprland.conf"
     rule='
-# archmates: frosted glass behind the archmates widget (universal or Noctalia)
-layerrule = blur, ^(archmates-widget|noctalia-desktop-widget-.*)$
-layerrule = ignorealpha 0.05, ^(archmates-widget|noctalia-desktop-widget-.*)$'
+# archmates: frosted glass behind the widgets and the chat panel (archmates-glass-v3)
+layerrule = blur, ^archmates-widget$
+layerrule = ignorealpha 0.05, ^archmates-widget$
+layerrule = blur, ^archmates-chat$
+layerrule = ignorealpha 0.05, ^archmates-chat$
+layerrule = blur, ^noctalia-desktop-widget-.*
+layerrule = ignorealpha 0.05, ^noctalia-desktop-widget-.*'
   else
     return 0
   fi
