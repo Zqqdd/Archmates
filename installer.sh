@@ -18,6 +18,7 @@ install -Dm755 target/release/archmates ~/.local/bin/archmates
 echo "→ Presence service (systemd user unit)"
 install -Dm644 packaging/archmates.service ~/.config/systemd/user/archmates.service
 systemctl --user daemon-reload
+systemctl --user disable archmates.service >/dev/null 2>&1 || true   # drop links from older versions
 systemctl --user enable --now archmates.service
 systemctl --user restart archmates.service
 

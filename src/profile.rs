@@ -52,6 +52,39 @@ fn installed_terminal() -> String {
         .unwrap_or_else(|| "?".into())
 }
 
+/// Desktop or compositor in use. The service may start before the desktop (and without its
+/// variables), so fall back to looking for a known compositor among running processes.
+fn window_manager() -> String {
+    if let Ok(wm) = std::env::var("XDG_CURRENT_DESKTOP") {
+        if !wm.is_empty() {
+            return wm;
+        }
+    }
+    const KNOWN: [(&str, &str); 9] = [
+        ("Hyprland", "Hyprland"),
+        ("sway", "sway"),
+        ("niri", "niri"),
+        ("river", "river"),
+        ("labwc", "labwc"),
+        ("wayfire", "Wayfire"),
+        ("kwin_wayland", "KDE"),
+        ("kwin_x11", "KDE"),
+        ("gnome-shell", "GNOME"),
+    ];
+    let running: Vec<String> = fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| fs::read_to_string(e.path().join("comm")).ok())
+        .map(|c| c.trim().to_string())
+        .collect();
+    KNOWN
+        .iter()
+        .find(|(process, _)| running.iter().any(|r| r == process))
+        .map(|(_, name)| name.to_string())
+        .unwrap_or_else(|| "?".into())
+}
+
 /// Profile picture: $ARCHMATES_AVATAR, else the system account picture, else ~/.face.
 pub fn avatar_path(user: &str) -> Option<PathBuf> {
     let candidates = [
@@ -92,7 +125,7 @@ impl Profile {
             host: read("/etc/hostname").unwrap_or_else(|| "linux".into()),
             distro: os_release_field("NAME").unwrap_or_else(|| "Linux".into()),
             kernel,
-            wm: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "?".into()),
+            wm: window_manager(),
             terminal: std::env::var("TERMINAL").ok().unwrap_or_else(installed_terminal),
             shell: login_shell(&user).unwrap_or_else(|| "?".into()),
             uptime_s,

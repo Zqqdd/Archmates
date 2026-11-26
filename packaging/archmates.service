@@ -1,7 +1,8 @@
 [Unit]
 Description=Archmates peer-to-peer presence (see when your friends are online)
-After=graphical-session.target network-online.target
-PartOf=graphical-session.target
+# Starts with your user session, whatever desktop or compositor you use
+# (graphical-session.target only exists with uwsm / some desktops).
+After=network-online.target
 
 [Service]
 ExecStart=%h/.local/bin/archmates daemon
@@ -9,4 +10,4 @@ Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
