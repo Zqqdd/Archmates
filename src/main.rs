@@ -1,4 +1,4 @@
-//! archmates: peer-to-peer friends list for CachyOS / Arch Linux.
+//! archmates: peer-to-peer friends list for Linux and Windows.
 //!
 //!   archmates code                    show your friend code to share
 //!   archmates add <code> <nickname>   add a friend (they must add you too)
@@ -13,18 +13,9 @@
 //!   archmates avatar [<image>]        show or set your profile picture
 //!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
 //!   archmates update [--install]      check for a new version (and install it)
-//!   archmates daemon                  run the service (normally via systemd)
+//!   archmates daemon                  run the service (systemd on Linux, Winmates on Windows)
 
-mod chat;
-mod config;
-mod ipc;
-mod stats;
-mod transfer;
-mod daemon;
-mod profile;
-mod proto;
-mod update;
-mod widget;
+use archmates::{chat, config, daemon, ipc, profile, stats, update, widget};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -349,7 +340,11 @@ async fn main() -> Result<()> {
                 println!("archmates is managed by pacman here: update it with  sudo pacman -Syu");
             } else if newer || force {
                 update::install(&latest).await?;
-                println!("\n✓ archmates {latest} installed. The service restarts by itself.");
+                if cfg!(windows) {
+                    println!("\n✓ archmates {latest} installed. Restart Winmates to use it.");
+                } else {
+                    println!("\n✓ archmates {latest} installed. The service restarts by itself.");
+                }
             } else {
                 println!("✓ You are up to date (latest release: {latest}).");
             }

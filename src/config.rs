@@ -9,13 +9,14 @@
 //!   ~/.cache/archmates/state.json           friends' status, read by the Noctalia widget
 //!   ~/.cache/archmates/avatars/             friends' profile pictures
 //!
+//! On Windows (Winmates): %APPDATA%\Winmates (data) and %LOCALAPPDATA%\Winmates (cache).
+//!
 //! The ARCHMATES_HOME variable replaces both folders (handy to test several
 //! instances on the same machine).
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -33,7 +34,15 @@ impl Paths {
             let base = PathBuf::from(base);
             return Self { data: base.join("data"), cache: base.join("cache") };
         }
-        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+        #[cfg(windows)]
+        {
+            let home = crate::platform::home();
+            let roaming = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Roaming"));
+            let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Local"));
+            return Self { data: roaming.join("Winmates"), cache: local.join("Winmates") };
+        }
+        #[allow(unreachable_code)]
+        let home = crate::platform::home();
         let data = std::env::var("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".local/share"))
@@ -68,13 +77,17 @@ pub fn load_or_create_key(paths: &Paths) -> Result<SecretKey> {
         return Ok(SecretKey::from_bytes(&arr));
     }
     fs::create_dir_all(&paths.data)?;
-    fs::set_permissions(&paths.data, fs::Permissions::from_mode(0o700))?;
     let key = SecretKey::generate();
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&p)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Readable by you only. (On Windows, files in your profile folder already are.)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        fs::set_permissions(&paths.data, fs::Permissions::from_mode(0o700))?;
+        options.mode(0o600);
+    }
+    let mut f = options.open(&p)?;
     f.write_all(&key.to_bytes())?;
     Ok(key)
 }

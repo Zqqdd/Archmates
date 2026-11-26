@@ -107,12 +107,7 @@ pub fn unread(paths: &Paths, code: &str) -> usize {
 
 pub fn new_id() -> String {
     let mut random = [0u8; 6];
-    let _ = getrandom_fill(&mut random);
+    let _ = getrandom::fill(&mut random);
     let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{hex}", crate::daemon::now_ms())
-}
-
-fn getrandom_fill(buf: &mut [u8]) -> std::io::Result<()> {
-    use std::io::Read;
-    fs::File::open("/dev/urandom")?.read_exact(buf)
 }

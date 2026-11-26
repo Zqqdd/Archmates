@@ -5,7 +5,8 @@
 //!   receiver → `accept\n` or `decline\n`               (the person chooses, up to 5 min)
 //!   sender   → the raw bytes, only after `accept`
 //!   receiver → `ok` once the whole file is written
-//! Received files go to ~/Downloads/Archmates/<nickname>/ (your XDG download folder).
+//! Received files go to ~/Downloads/Archmates/<nickname>/ (your XDG download folder),
+//! or Downloads\Winmates\<nickname>\ on Windows.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +23,8 @@ use crate::config::{FriendList, Paths};
 pub const FILE_ALPN: &[u8] = b"archmates/file/2";
 /// How long the receiver has to accept a file.
 pub const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Folder for received files, inside your download folder.
+pub const DOWNLOAD_FOLDER: &str = if cfg!(windows) { "Winmates" } else { "Archmates" };
 /// Largest file accepted.
 pub const FILE_MAX: u64 = 4 * 1024 * 1024 * 1024;
 
@@ -31,9 +34,21 @@ struct Header {
     size: u64,
 }
 
-/// Your download folder (XDG_DOWNLOAD_DIR from ~/.config/user-dirs.dirs, else ~/Downloads).
+/// Your download folder (XDG_DOWNLOAD_DIR from ~/.config/user-dirs.dirs, else ~/Downloads;
+/// on Windows: the Downloads folder set in Explorer, else %USERPROFILE%\Downloads).
 pub fn download_dir() -> PathBuf {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+    let home = crate::platform::home();
+    #[cfg(windows)]
+    {
+        use crate::platform::reg;
+        const SHELL_FOLDERS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
+        // Known folder id of "Downloads"; the value may contain %USERPROFILE%.
+        let set = reg::get_string(reg::CURRENT_USER, SHELL_FOLDERS, "{374DE290-123F-4565-9164-39C4925E467B}")
+            .map(|v| PathBuf::from(v.replace("%USERPROFILE%", &home.to_string_lossy())))
+            .filter(|p| p.is_absolute());
+        return set.unwrap_or_else(|| home.join("Downloads"));
+    }
+    #[allow(unreachable_code)]
     let config = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".config"));
     let from_file = std::fs::read_to_string(config.join("user-dirs.dirs")).ok().and_then(|txt| {
         txt.lines().find_map(|l| l.strip_prefix("XDG_DOWNLOAD_DIR=")).map(|v| {
@@ -44,11 +59,22 @@ pub fn download_dir() -> PathBuf {
     from_file.unwrap_or_else(|| home.join("Downloads"))
 }
 
-/// Keeps only a safe file name: no folders, no hidden files, no control characters.
+/// Keeps only a safe file name: no folders, no hidden files, no control characters, and nothing
+/// Windows refuses (`<>:"|?*`, trailing dots, CON, NUL…), so a file from Linux saves fine on Windows.
 fn safe_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
-    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches('.').trim_end_matches(['.', ' ']).to_string();
+    let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let cleaned = if RESERVED.contains(&stem.as_str()) { format!("_{cleaned}") } else { cleaned };
     if cleaned.is_empty() { "file".into() } else { cleaned.chars().take(200).collect() }
 }
 
@@ -66,6 +92,22 @@ fn free_path(dir: &Path, name: &str) -> PathBuf {
         .map(|n| dir.join(format!("{stem} ({n}){ext}")))
         .find(|p| !p.exists())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_name;
+
+    #[test]
+    fn file_names_are_safe_on_every_system() {
+        assert_eq!(safe_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_name(r"C:\Users\x\photo.png"), "photo.png");
+        assert_eq!(safe_name(".bashrc"), "bashrc");
+        assert_eq!(safe_name("a:b?.txt"), "a_b_.txt");
+        assert_eq!(safe_name("con.txt"), "_con.txt");
+        assert_eq!(safe_name("notes. "), "notes");
+        assert_eq!(safe_name(""), "file");
+    }
 }
 
 // ── Sending ─────────────────────────────────────────────────────────────────
@@ -174,7 +216,7 @@ async fn receive(connection: &Connection, id: EndpointId, nickname: &str, on_off
     }
     send.write_all(b"accept\n").await?;
 
-    let dir = download_dir().join("Archmates").join(safe_name(nickname));
+    let dir = download_dir().join(DOWNLOAD_FOLDER).join(safe_name(nickname));
     tokio::fs::create_dir_all(&dir).await?;
     let target = free_path(&dir, &name);
     let partial = target.with_extension("part");

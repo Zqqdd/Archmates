@@ -3,15 +3,44 @@
 > 🤖 **This project was almost entirely written by [Claude](https://claude.ai), Anthropic's AI assistant**
 > (through Claude Code). The repository owner directed the idea, the design choices and the testing.
 
-A **peer-to-peer** friends list for CachyOS / Arch Linux: see when your friends are online, with their profile
-(user, host, distro, kernel, WM…) and their picture, right on your Noctalia desktop.
+A **peer-to-peer** friends list for CachyOS / Arch Linux **and Windows**: see when your friends are online, with
+their profile (user, host, distro, kernel, WM…) and their picture, right on your Noctalia desktop.
+
+On Windows the client is called **Winmates**. Both run the same code and speak the same protocol: a friend on
+Windows and a friend on Linux see each other, chat and send files to each other exactly as two Linux users do.
 
 No accounts, no servers of your own: your friends list stays on your machine, and machines talk to each other
 directly over encrypted connections, powered by [Iroh](https://iroh.computer).
 
 ## Install
 
-### From a release archive (recommended, no Rust needed)
+### Windows (Winmates)
+
+1. Download `winmates-<version>-x86_64-windows.zip` from the
+   [releases page](https://github.com/Zqqdd/Archmates/releases/latest) and unzip it.
+2. Double-click `winmates.exe`.
+
+That's all, no admin rights needed. On first launch Winmates installs itself in
+`%LOCALAPPDATA%\Programs\Winmates`, adds a **Winmates** entry to the Start menu and turns on
+**start with Windows** (Settings → "Start Winmates with Windows" to turn it off). You can delete the downloaded
+folder afterwards.
+
+- **Updates are automatic**: each time Winmates starts (at login, or when you open it), it checks GitHub for a
+  new release, checks its SHA-256 checksum, installs it and restarts on the new version.
+  Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn this off.
+- **Closing the window keeps Winmates running** in the background: your friends still see you online and you
+  still get notifications. *Settings → Quit Winmates* stops it completely.
+- Your data is in `%APPDATA%\Winmates` (friend code, friends list, conversations), received files in
+  `Downloads\Winmates\<friend>\`.
+- The `archmates` command is installed next to it, with the same commands as on Linux:
+  `%LOCALAPPDATA%\Programs\Winmates\archmates.exe list`.
+- Windows may show a firewall prompt the first time: allowing it lets friends reach you directly instead of
+  through a relay.
+
+To uninstall: turn off "Start Winmates with Windows", quit Winmates, then delete
+`%LOCALAPPDATA%\Programs\Winmates` and the Start menu entry (and `%APPDATA%\Winmates` to remove your data).
+
+### Linux: from a release archive (recommended, no Rust needed)
 
 Download `archmates-<version>-x86_64-linux.tar.gz` from the
 [releases page](https://github.com/Zqqdd/Archmates/releases), then:
@@ -20,7 +49,7 @@ Download `archmates-<version>-x86_64-linux.tar.gz` from the
 tar -xzf archmates-*-x86_64-linux.tar.gz && cd archmates-*-x86_64-linux && ./installer.sh
 ```
 
-### From source
+### Linux: from source
 
 You need Rust (`sudo pacman -S rustup && rustup default stable`), then:
 
@@ -74,7 +103,9 @@ usage, your conversation, a message field and a "send a file" button.
   your friend accepts**: they get a notification and an offer in the chat with Accept / Decline buttons
   (or `archmates offers`, `archmates accept <id>`, `archmates decline <id>`). Offers expire after 5 minutes.
   Accepted files land in `~/Downloads/Archmates/<friend>/` (your XDG download folder).
-- **Pictures** you send or receive are shown directly in the conversation.
+- **Pictures** you send or receive are shown directly in the conversation. In Winmates (and the desktop app) and
+  in the universal widget, they are **blurred automatically whenever the chat is not the active window**, and
+  sharp again as soon as you come back to it.
 - **RAM and storage** usage is shared with your friends only. Turn it off with `archmates stats off`.
 
 ### Profile picture
@@ -124,6 +155,14 @@ Its colors follow your theme automatically, and update live when it changes: you
 you use them (`~/.cache/wal/colors.json`), otherwise your GTK theme (including libadwaita and
 matugen-generated colors). For full control, add `~/.config/archmates/widget.css` (GTK CSS, loaded after the
 default style; `@bg`, `@fg` and `@accent` hold the theme colors).
+
+### Desktop app on Linux (optional)
+
+Winmates' window also runs on Linux, named "Archmates" there, next to the widgets:
+
+```bash
+cargo build --release --features app && ./target/release/winmates
+```
 
 ### Try it alone
 
@@ -193,7 +232,8 @@ New AUR package submissions are currently closed. A ready `PKGBUILD` for `archma
 ### Publishing a new version (maintainers)
 
 Bump the version in `Cargo.toml` (and `noctalia/archmates/plugin.toml`), run `cargo build` to refresh
-`Cargo.lock`, commit, then push a tag. GitHub Actions builds and publishes the release archive:
+`Cargo.lock`, commit, then push a tag. GitHub Actions builds and publishes the Linux archive and the
+Winmates archive (built on a Windows runner):
 
 ```bash
 git tag v0.3.0 && git push origin v0.3.0
@@ -227,13 +267,15 @@ traffic goes through a public Iroh relay, which only ever sees encrypted data.
 | File | Role |
 |---|---|
 | `src/main.rs` | the commands (`archmates code`, `add`, `list`…) |
+| `src/bin/winmates.rs` | Winmates, the Windows client (also a desktop app on Linux): window, install, updates |
+| `src/platform.rs` | what differs between Linux and Windows: notifications, start with the system… |
 | `src/config.rs` | local files: key, friends list, invisible mode |
 | `src/profile.rs` | builds your profile (distro, kernel, picture…) |
 | `src/proto.rs` | the format of the messages exchanged between machines |
 | `src/daemon.rs` | the service: listens, contacts friends, writes the state, notifications |
 | `src/chat.rs` | conversations and the offline message queue |
 | `src/transfer.rs` | file transfers (own protocol, `archmates/file/1`) |
-| `src/ipc.rs` | local socket used by the CLI and widgets to reach the service |
+| `src/ipc.rs` | local socket (named pipe on Windows) used by the CLI, widgets and Winmates to reach the service |
 | `src/stats.rs` | RAM and storage usage |
 | `noctalia/archmates/friend.luau` | the Noctalia friend panel |
 | `src/widget.rs` | starts and stops the universal widget |

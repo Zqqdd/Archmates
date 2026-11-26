@@ -8,6 +8,8 @@
 //! The service checks every 15 s and (re)starts the widget as soon as a Wayland desktop is up,
 //! so it works whatever compositor or login method you use.
 
+#![cfg_attr(windows, allow(dead_code))]
+
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};

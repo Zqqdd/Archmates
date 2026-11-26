@@ -1,4 +1,5 @@
 //! Your profile, as sent to your friends.
+#![cfg_attr(windows, allow(dead_code))]
 
 use std::fs;
 use std::path::PathBuf;
@@ -97,6 +98,7 @@ const AVATAR_SIZE: u32 = 256;
 
 /// Picture set in the system account settings (KDE, GNOME, Noctalia… all use AccountsService).
 /// Asked over D-Bus because its config folder is not readable by users.
+#[cfg(not(windows))]
 fn accounts_service_icon(user: &str) -> Option<PathBuf> {
     fn quoted(output: &[u8]) -> Option<String> {
         let text = String::from_utf8_lossy(output);
@@ -119,6 +121,19 @@ fn accounts_service_icon(user: &str) -> Option<PathBuf> {
 }
 
 /// Every place a profile picture can be, in order of preference.
+#[cfg(windows)]
+fn avatar_candidates(_user: &str) -> Vec<PathBuf> {
+    [
+        std::env::var("ARCHMATES_AVATAR").ok().map(PathBuf::from),
+        Some(crate::config::Paths::detect().avatar()),
+        windows_info::account_picture(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+#[cfg(not(windows))]
 fn avatar_candidates(user: &str) -> Vec<PathBuf> {
     let home = std::env::var("HOME").map(PathBuf::from).ok();
     [
@@ -212,11 +227,92 @@ pub fn fingerprint(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
+/// Windows: version, build, uptime, terminal and shell, as a Linux user would expect to read them.
+#[cfg(windows)]
+mod windows_info {
+    use crate::platform::reg;
+
+    const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+
+    /// "Windows 11 Pro 24H2" (the registry still says "Windows 10" on Windows 11).
+    pub fn edition() -> String {
+        let name = reg::get_string(reg::LOCAL_MACHINE, CURRENT_VERSION, "ProductName").unwrap_or_else(|| "Windows".into());
+        let name = if build() >= 22000 { name.replace("Windows 10", "Windows 11") } else { name };
+        match reg::get_string(reg::LOCAL_MACHINE, CURRENT_VERSION, "DisplayVersion") {
+            Some(v) if !v.is_empty() => format!("{name} {v}"),
+            _ => name,
+        }
+    }
+
+    pub fn build() -> u32 {
+        reg::get_string(reg::LOCAL_MACHINE, CURRENT_VERSION, "CurrentBuild").and_then(|b| b.parse().ok()).unwrap_or(0)
+    }
+
+    /// "NT 10.0.26100.2605"
+    pub fn kernel() -> String {
+        let ubr = reg::get_dword(reg::LOCAL_MACHINE, CURRENT_VERSION, "UBR").unwrap_or(0);
+        format!("NT 10.0.{}.{ubr}", build())
+    }
+
+    pub fn uptime_s() -> u64 {
+        unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() / 1000 }
+    }
+
+    fn local_app_data(rel: &str) -> bool {
+        std::env::var_os("LOCALAPPDATA").is_some_and(|d| std::path::Path::new(&d).join(rel).exists())
+    }
+
+    pub fn terminal() -> String {
+        if std::env::var_os("WT_SESSION").is_some() || local_app_data(r"Microsoft\WindowsApps\wt.exe") {
+            "Windows Terminal".into()
+        } else {
+            "conhost".into()
+        }
+    }
+
+    pub fn shell() -> String {
+        let pwsh7 = std::env::var_os("ProgramFiles").is_some_and(|d| std::path::Path::new(&d).join(r"PowerShell\7\pwsh.exe").exists());
+        if pwsh7 { "pwsh".into() } else { "PowerShell".into() }
+    }
+
+    /// The account picture set in Windows settings (largest size available).
+    pub fn account_picture() -> Option<std::path::PathBuf> {
+        let out = crate::platform::command("whoami").args(["/user", "/fo", "csv", "/nh"]).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let sid = text.trim().rsplit(',').next()?.trim_matches('"').to_string();
+        if !sid.starts_with("S-") {
+            return None;
+        }
+        let key = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\AccountPicture\Users\{sid}");
+        ["Image448", "Image240", "Image208", "Image192"]
+            .iter()
+            .find_map(|v| reg::get_string(reg::LOCAL_MACHINE, &key, v))
+            .map(std::path::PathBuf::from)
+    }
+}
+
 impl Profile {
+    #[cfg(windows)]
     pub fn local() -> Self {
-        let user = std::env::var("ARCHMATES_USER")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "?".into());
+        let user = crate::platform::user_name();
+        Self {
+            host: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "windows".into()),
+            distro: windows_info::edition(),
+            kernel: windows_info::kernel(),
+            wm: "Explorer".into(),
+            terminal: windows_info::terminal(),
+            shell: windows_info::shell(),
+            uptime_s: windows_info::uptime_s(),
+            avatar_hash: read_avatar(&user).map(|b| fingerprint(&b)),
+            version: env!("CARGO_PKG_VERSION").into(),
+            stats: crate::stats::current(&crate::config::Paths::detect()),
+            user,
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn local() -> Self {
+        let user = crate::platform::user_name();
         let kernel = read("/proc/sys/kernel/osrelease").unwrap_or_default();
         let kernel = kernel.strip_suffix("-cachyos").unwrap_or(&kernel).to_string();
         let uptime_s = read("/proc/uptime")
