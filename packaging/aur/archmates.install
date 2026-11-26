@@ -1,0 +1,14 @@
+post_install() {
+  echo ""
+  echo "  archmates is installed. As your normal user (not root), run:"
+  echo ""
+  echo "    systemctl --user enable --now archmates   # start the presence service"
+  echo "    archmates-setup-desktop                   # Noctalia widget + Hyprland blur"
+  echo "    archmates code                            # your friend code"
+  echo ""
+}
+
+post_upgrade() {
+  # The running service notices its program was replaced and restarts by itself.
+  :
+}

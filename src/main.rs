@@ -6,12 +6,14 @@
 //!   archmates list                    show your friends and their status
 //!   archmates invisible on|off        invisible mode
 //!   archmates profile                 show what your friends see of you
+//!   archmates update                  check whether a new version is available
 //!   archmates daemon                  run the service (normally via systemd)
 
 mod config;
 mod daemon;
 mod profile;
 mod proto;
+mod update;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -51,6 +53,8 @@ enum Command {
     },
     /// Show your profile as your friends see it
     Profile,
+    /// Check whether a new version is available
+    Update,
     /// Run the presence service (in the foreground)
     Daemon,
 }
@@ -145,6 +149,15 @@ async fn main() -> Result<()> {
         },
         Command::Profile => {
             println!("{}", serde_json::to_string_pretty(&profile::Profile::local())?);
+        }
+        Command::Update => {
+            println!("Installed version: {}", update::CURRENT);
+            let latest = update::latest_version().await?;
+            if update::is_newer(&latest, update::CURRENT) {
+                println!("✓ Version {latest} is available. Update with:\n  {}", update::how_to_update());
+            } else {
+                println!("✓ You are up to date (latest release: {latest}).");
+            }
         }
         Command::Daemon => daemon::run().await?,
     }

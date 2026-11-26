@@ -96,6 +96,12 @@ function render()
     if nowMs() - (state.me.updated_ms or 0) > 120000 then
       table.insert(children, ui.label({ text = "Service stopped (status frozen)", fontSize = 11, color = "error" }))
     end
+    if state.me.update_available then
+      table.insert(children, ui.row({ gap = 6, align = "center" }, {
+        ui.glyph({ name = "download", size = 13, color = "tertiary" }),
+        ui.label({ text = "Update available: " .. state.me.update_available, fontSize = 11, color = "tertiary" }),
+      }))
+    end
     if state.me.invisible then
       table.insert(children, ui.label({ text = "You are in invisible mode", fontSize = 11, color = "tertiary" }))
     end

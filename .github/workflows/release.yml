@@ -1,0 +1,42 @@
+# Publishes a GitHub release when a version tag (e.g. v0.2.0) is pushed.
+# The release contains a ready-to-run archive used by the AUR package.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Check the tag matches Cargo.toml
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $VERSION" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - run: cargo build --locked --release
+      - run: cargo test --locked --release
+      - name: Package
+        run: |
+          NAME="archmates-$VERSION-x86_64-linux"
+          mkdir -p "dist/$NAME"
+          cp target/release/archmates README.md LICENSE "dist/$NAME/"
+          cp -r packaging noctalia scripts "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 \
+            --title "archmates $GITHUB_REF_NAME" --generate-notes

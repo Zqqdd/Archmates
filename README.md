@@ -11,9 +11,20 @@ directly over encrypted connections, powered by [Iroh](https://iroh.computer).
 
 ## Install
 
+### From the AUR (recommended, updates come with your system updates)
+
+```bash
+paru -S archmates-bin
+systemctl --user enable --now archmates
+archmates-setup-desktop
+```
+
+### From source
+
 You need Rust (`sudo pacman -S rustup && rustup default stable`), then:
 
 ```bash
+git clone https://github.com/Zqqdd/Archmates.git && cd Archmates
 ./installer.sh
 ```
 
@@ -40,6 +51,23 @@ archmates profile                  # what your friends see of you
 ```
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
+
+## Updates
+
+- **AUR install**: archmates is updated with the rest of your system (`paru -Syu`).
+- **Source install**: `git pull && ./installer.sh`.
+- Once a day, the service checks GitHub for a new release. When there is one, you get a notification and the
+  widget shows "Update available". Nothing is downloaded or installed automatically: updates always go through
+  pacman or the installer, so you can see what lands on your machine. Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn
+  the check off, or run `archmates update` to check by hand.
+- After an update, the running service notices that its program was replaced and restarts itself.
+
+New versions are published by pushing a tag: GitHub Actions builds the release archive used by the AUR package.
+
+```bash
+# bump the version in Cargo.toml first, then:
+git tag v0.3.0 && git push origin v0.3.0
+```
 
 ## How it works
 

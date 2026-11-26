@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Friend, FriendList, Paths, write_atomic};
 use crate::profile::{AVATAR_MAX, Profile, fingerprint, read_avatar};
 use crate::proto::{ALPN, CODE_NOT_FRIEND, JSON_MAX, Request, Response};
+use crate::update;
 
 const INTERVAL: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -58,6 +59,10 @@ pub struct Me {
     pub code: String,
     pub invisible: bool,
     pub updated_ms: u64,
+    pub version: String,
+    /// Newer version published on GitHub, if any.
+    #[serde(default)]
+    pub update_available: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +76,7 @@ struct Shared {
     me: EndpointId,
     friends: Mutex<BTreeMap<EndpointId, FriendState>>,
     notified: Mutex<HashSet<EndpointId>>,
+    update_available: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -170,7 +176,13 @@ impl Shared {
             friends.values().cloned().collect()
         };
         let file = StateFile {
-            me: Me { code: self.me.to_string(), invisible, updated_ms: t },
+            me: Me {
+                code: self.me.to_string(),
+                invisible,
+                updated_ms: t,
+                version: update::CURRENT.to_string(),
+                update_available: self.update_available.lock().unwrap().clone(),
+            },
             friends: list,
         };
         write_atomic(&self.paths.state(), serde_json::to_string_pretty(&file)?.as_bytes())?;
@@ -297,6 +309,41 @@ fn short(id: &EndpointId) -> String {
     id.to_string().chars().take(8).collect()
 }
 
+// ── Update check ────────────────────────────────────────────────────────────
+
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+/// Checks GitHub one minute after start, then once a day. Notifies once per new version.
+async fn check_updates(shared: Arc<Shared>) {
+    if std::env::var_os("ARCHMATES_NO_UPDATE_CHECK").is_some() {
+        return;
+    }
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    loop {
+        match update::latest_version().await {
+            Ok(latest) if update::is_newer(&latest, update::CURRENT) => {
+                *shared.update_available.lock().unwrap() = Some(latest.clone());
+                let marker = shared.paths.cache.join("update-notified");
+                let already = std::fs::read_to_string(&marker).ok().is_some_and(|v| v.trim() == latest);
+                if !already {
+                    let _ = std::process::Command::new("notify-send")
+                        .args(["-a", "Archmates", "-u", "normal"])
+                        .arg(format!("Archmates {latest} is available"))
+                        .arg(format!("You have {}. Update with: {}", update::CURRENT, update::how_to_update()))
+                        .spawn();
+                    let _ = write_atomic(&marker, latest.as_bytes());
+                }
+                let _ = shared.publish();
+            }
+            Ok(_) => {
+                *shared.update_available.lock().unwrap() = None;
+            }
+            Err(err) => eprintln!("update check: {err:#}"),
+        }
+        tokio::time::sleep(UPDATE_CHECK_EVERY).await;
+    }
+}
+
 // ── Main loop ───────────────────────────────────────────────────────────────
 
 pub async fn run() -> Result<()> {
@@ -320,7 +367,9 @@ pub async fn run() -> Result<()> {
         me,
         friends: Mutex::new(initial),
         notified: Mutex::new(HashSet::new()),
+        update_available: Mutex::new(None),
     });
+    tokio::spawn(check_updates(shared.clone()));
 
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(key)
@@ -337,6 +386,12 @@ pub async fn run() -> Result<()> {
         tokio::select! {
             _ = ticker.tick() => {}
             _ = tokio::signal::ctrl_c() => break,
+        }
+        // After an update the program file is replaced: exit so systemd restarts the new version.
+        if update::binary_replaced() {
+            eprintln!("archmates: new version installed, restarting");
+            router.shutdown().await.ok();
+            std::process::exit(75);
         }
         let list = match shared.reload_list() {
             Ok(l) => l,
