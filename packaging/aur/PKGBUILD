@@ -1,13 +1,15 @@
 # Maintainer: Zqqdd
 pkgname=archmates-bin
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="Peer-to-peer friends list for Arch Linux: see when your friends are online"
 arch=('x86_64')
 url="https://github.com/Zqqdd/Archmates"
 license=('MIT')
 depends=('glibc' 'gcc-libs')
-optdepends=('noctalia: desktop widget'
+optdepends=('noctalia: Noctalia desktop widget'
+            'gtk4-layer-shell: universal desktop widget (without Noctalia)'
+            'python-gobject: universal desktop widget (without Noctalia)'
             'libnotify: notifications when a friend comes online'
             'python: automatic widget placement on Hyprland')
 provides=('archmates')
@@ -27,8 +29,10 @@ package() {
   install -d "$pkgdir/usr/share/archmates"
   cp -r noctalia "$pkgdir/usr/share/archmates/"
   install -Dm755 scripts/setup-desktop.sh "$pkgdir/usr/share/archmates/setup-desktop.sh"
+  install -Dm755 widget/archmates-widget "$pkgdir/usr/share/archmates/archmates-widget"
   install -d "$pkgdir/usr/bin"
   ln -s /usr/share/archmates/setup-desktop.sh "$pkgdir/usr/bin/archmates-setup-desktop"
+  ln -s /usr/share/archmates/archmates-widget "$pkgdir/usr/bin/archmates-widget"
 
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"

@@ -6,6 +6,7 @@
 //!   archmates list                    show your friends and their status
 //!   archmates invisible on|off        invisible mode
 //!   archmates profile                 show what your friends see of you
+//!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
 //!   archmates update                  check whether a new version is available
 //!   archmates daemon                  run the service (normally via systemd)
 
@@ -14,6 +15,7 @@ mod daemon;
 mod profile;
 mod proto;
 mod update;
+mod widget;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -53,10 +55,22 @@ enum Command {
     },
     /// Show your profile as your friends see it
     Profile,
+    /// Universal desktop widget: auto (when Noctalia is absent), on or off
+    Widget {
+        #[arg(value_enum)]
+        mode: Option<WidgetMode>,
+    },
     /// Check whether a new version is available
     Update,
     /// Run the presence service (in the foreground)
     Daemon,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum WidgetMode {
+    Auto,
+    On,
+    Off,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -149,6 +163,26 @@ async fn main() -> Result<()> {
         },
         Command::Profile => {
             println!("{}", serde_json::to_string_pretty(&profile::Profile::local())?);
+        }
+        Command::Widget { mode } => {
+            if let Some(mode) = mode {
+                let text = match mode {
+                    WidgetMode::Auto => "auto",
+                    WidgetMode::On => "on",
+                    WidgetMode::Off => "off",
+                };
+                std::fs::create_dir_all(&paths.data)?;
+                std::fs::write(paths.widget_mode(), text)?;
+            }
+            let mode = widget::Mode::load(&paths);
+            let shown = widget::should_show(mode);
+            println!("Universal widget: {} ({})", mode.as_str(), if shown { "shown" } else { "hidden" });
+            match widget::program() {
+                None => println!("  archmates-widget is not installed."),
+                Some(p) if shown => println!("  The service starts {} within 15 s.", p.display()),
+                Some(_) if mode == widget::Mode::Auto => println!("  Hidden because Noctalia is running (it has its own widget)."),
+                Some(_) => {}
+            }
         }
         Command::Update => {
             println!("Installed version: {}", update::CURRENT);

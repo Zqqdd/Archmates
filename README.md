@@ -19,6 +19,15 @@ systemctl --user enable --now archmates
 archmates-setup-desktop
 ```
 
+### From a release archive (no Rust needed)
+
+Download `archmates-<version>-x86_64-linux.tar.gz` from the
+[releases page](https://github.com/Zqqdd/Archmates/releases), then:
+
+```bash
+tar -xzf archmates-*-x86_64-linux.tar.gz && cd archmates-*-x86_64-linux && ./installer.sh
+```
+
 ### From source
 
 You need Rust (`sudo pacman -S rustup && rustup default stable`), then:
@@ -30,10 +39,13 @@ git clone https://github.com/Zqqdd/Archmates.git && cd Archmates
 
 The script does everything, with no password needed:
 
-- builds the project and installs the `archmates` command to `~/.local/bin`;
+- builds the project (or uses the ready-made binary from a release archive) and installs the `archmates` and
+  `archmates-widget` commands to `~/.local/bin`;
 - starts the presence service (systemd user unit) at every login;
 - if you use **Noctalia**: installs the "Archmates" widget and places it at the top right of your main screen,
   without touching your other widgets (move it later with `noctalia msg desktop-widgets-edit`);
+- without Noctalia: the **universal widget** is used instead (see below), and the script tells you which
+  packages it needs, if any;
 - if you use **Hyprland**: adds a frosted-glass blur rule behind the widget. The rule is only kept if Hyprland
   accepts it; otherwise your config is restored as it was.
 
@@ -51,6 +63,36 @@ archmates profile                  # what your friends see of you
 ```
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
+
+### Universal widget (without Noctalia)
+
+`archmates-widget` is a small frosted-glass card pinned to your desktop, behind your windows. It works on
+Wayland compositors with the layer-shell protocol: Hyprland, sway, KDE Plasma, niri, river, labwc, Wayfire…
+(not GNOME). It needs:
+
+```bash
+sudo pacman -S --needed gtk4 gtk4-layer-shell python-gobject
+```
+
+The service starts it by itself as soon as your desktop is up, and only when Noctalia is not running
+(Noctalia has its own widget). Change that with:
+
+```bash
+archmates widget auto   # default: shown when Noctalia is absent
+archmates widget on     # always shown
+archmates widget off    # never shown
+```
+
+Customise it with `~/.config/archmates/widget.toml`:
+
+```toml
+corner = "top-right"   # top-left, top-right, bottom-left, bottom-right
+margin_x = 40
+margin_y = 60
+output = "DP-1"        # screen to use (default: the main screen)
+```
+
+and its look with `~/.config/archmates/widget.css` (GTK CSS, loaded after the default style).
 
 ### Try it alone
 
@@ -112,7 +154,10 @@ traffic goes through a public Iroh relay, which only ever sees encrypted data.
 | `src/profile.rs` | builds your profile (distro, kernel, picture…) |
 | `src/proto.rs` | the format of the messages exchanged between machines |
 | `src/daemon.rs` | the service: listens, contacts friends, writes the state, notifications |
-| `noctalia/archmates/` | the desktop widget (Luau) |
+| `src/widget.rs` | starts and stops the universal widget |
+| `src/update.rs` | checks GitHub for new releases |
+| `noctalia/archmates/` | the Noctalia desktop widget (Luau) |
+| `widget/archmates-widget` | the universal desktop widget (Python + GTK4) |
 | `packaging/archmates.service` | the systemd user unit |
 
 ## Prototype limitations

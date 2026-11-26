@@ -23,4 +23,4 @@ jobs:
       - run: cargo build --locked --release
       - run: cargo test --locked --release
       - name: Check shell scripts
-        run: bash -n installer.sh && bash -n scripts/setup-desktop.sh
+        run: bash -n installer.sh && bash -n scripts/setup-desktop.sh && python3 -m py_compile widget/archmates-widget

@@ -30,8 +30,8 @@ jobs:
         run: |
           NAME="archmates-$VERSION-x86_64-linux"
           mkdir -p "dist/$NAME"
-          cp target/release/archmates README.md LICENSE "dist/$NAME/"
-          cp -r packaging noctalia scripts "dist/$NAME/"
+          cp target/release/archmates README.md LICENSE installer.sh "dist/$NAME/"
+          cp -r packaging noctalia scripts widget "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
       - name: Publish the release

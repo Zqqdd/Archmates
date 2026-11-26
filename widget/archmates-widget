@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""Universal archmates desktop widget (for desktops without Noctalia).
+
+A small frosted-glass card pinned to the desktop, behind your windows, showing your
+friends and who is online. It reads ~/.cache/archmates/state.json (written by the
+archmates service) every 5 seconds.
+
+Works on Wayland compositors that support the layer-shell protocol: Hyprland, sway,
+KDE Plasma, niri, river, labwc, Wayfire... (not GNOME).
+
+Needs: gtk4, gtk4-layer-shell, python-gobject
+    sudo pacman -S --needed gtk4 gtk4-layer-shell python-gobject
+
+Customise the look by creating ~/.config/archmates/widget.css (loaded after the
+default style below), and the position with ~/.config/archmates/widget.toml:
+    corner = "top-right"      # top-left, top-right, bottom-left, bottom-right
+    margin_x = 40
+    margin_y = 60
+    output = "DP-1"           # screen to use (default: the main screen, at the top left)
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+# gtk4-layer-shell must be loaded before libwayland: re-run ourselves with it preloaded.
+LAYER_SHELL_LIB = next(
+    (p for p in ("/usr/lib/libgtk4-layer-shell.so", "/usr/lib64/libgtk4-layer-shell.so",
+                 "/usr/local/lib/libgtk4-layer-shell.so") if os.path.exists(p)),
+    None,
+)
+if LAYER_SHELL_LIB and LAYER_SHELL_LIB not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = ":".join(filter(None, [LAYER_SHELL_LIB, os.environ.get("LD_PRELOAD")]))
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+try:
+    import gi
+
+    gi.require_version("Gdk", "4.0")
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gdk, GLib, Gtk
+    from gi.repository import Gtk4LayerShell as LayerShell
+except (ImportError, ValueError) as err:
+    sys.exit(
+        f"archmates-widget: missing dependency ({err}).\n"
+        "Install it with: sudo pacman -S --needed gtk4 gtk4-layer-shell python-gobject"
+    )
+
+HOME = Path.home()
+STATE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "archmates" / "state.json"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "archmates"
+REFRESH_SECONDS = 5
+WIDTH = 300
+
+DEFAULT_CSS = """
+window.archmates { background: transparent; }
+.card {
+  background-color: rgba(20, 20, 24, 0.30);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 18px;
+  padding: 16px;
+  color: #ece6e1;
+}
+.title { font-family: monospace; font-weight: bold; font-size: 14px; color: @accent; }
+.count { font-family: monospace; font-size: 11px; opacity: 0.75; }
+.nickname { font-weight: 600; }
+.subtitle { font-size: 11px; opacity: 0.75; }
+.warning { font-size: 11px; color: #f2b8b5; }
+.notice { font-size: 11px; color: @accent; }
+.avatar { border-radius: 18px; background-color: rgba(255, 255, 255, 0.12); }
+.offline-avatar { opacity: 0.45; }
+.dot { min-width: 8px; min-height: 8px; border-radius: 4px; }
+.dot.online { background-color: @accent; }
+.dot.pending { background-color: #e6c07b; }
+.dot.offline { background-color: rgba(255, 255, 255, 0.35); }
+separator { background-color: rgba(255, 255, 255, 0.18); min-height: 1px; }
+button.copy { font-size: 11px; padding: 2px 10px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08); border: none; color: inherit; box-shadow: none; }
+button.copy:hover { background: rgba(255, 255, 255, 0.18); }
+"""
+ACCENT = "@define-color accent #f0a868;\n"
+ORDER = {"online": 0, "pending": 1, "offline": 2}
+
+
+def ago(ms: int) -> str:
+    s = max(0, int(time.time() - ms / 1000))
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return f"{s // 60} min ago"
+    if s < 86400:
+        return f"{s // 3600} h ago"
+    return f"{s // 86400} d ago"
+
+
+def duration(s: int) -> str:
+    h, m = s // 3600, (s % 3600) // 60
+    return f"{h} h {m:02d} min" if h else f"{m} min"
+
+
+def load_state():
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def load_position():
+    pos = {"corner": "top-right", "margin_x": 40, "margin_y": 60}
+    try:
+        pos.update(tomllib.loads((CONFIG_DIR / "widget.toml").read_text()))
+    except (OSError, tomllib.TOMLDecodeError):
+        pass
+    return pos
+
+
+def pick_monitor(name):
+    """The screen called `name`, else the main one (at 0,0), else None (compositor decides)."""
+    monitors = list(Gdk.Display.get_default().get_monitors())
+    if name:
+        for m in monitors:
+            if m.get_connector() == name:
+                return m
+    for m in monitors:
+        g = m.get_geometry()
+        if g.x == 0 and g.y == 0:
+            return m
+    return monitors[0] if monitors else None
+
+
+def label(text, *classes, xalign=0.0):
+    lbl = Gtk.Label(label=text, xalign=xalign)
+    lbl.set_ellipsize(3)  # Pango.EllipsizeMode.END
+    for c in classes:
+        lbl.add_css_class(c)
+    return lbl
+
+
+def avatar(friend):
+    box = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.CENTER, hexpand=False)
+    box.set_size_request(36, 36)
+    box.set_overflow(Gtk.Overflow.HIDDEN)
+    box.add_css_class("avatar")
+    if friend.get("status") != "online":
+        box.add_css_class("offline-avatar")
+    path = friend.get("avatar")
+    if path and os.path.exists(path):
+        pic = Gtk.Picture.new_for_filename(path)
+        pic.set_content_fit(Gtk.ContentFit.COVER)
+        pic.set_size_request(36, 36)
+        pic.set_can_shrink(True)
+        box.append(pic)
+    else:
+        icon = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
+        icon.set_pixel_size(18)
+        icon.set_size_request(36, 36)
+        box.append(icon)
+    return box
+
+
+def friend_row(friend):
+    status = friend.get("status", "offline")
+    profile = friend.get("profile")
+    if status == "online":
+        subtitle = f"{profile['user']}@{profile['host']} · {profile['distro']}" if profile else "online"
+    elif status == "pending":
+        subtitle = "hasn't added you yet"
+    else:
+        seen = friend.get("last_seen_ms")
+        subtitle = f"last seen {ago(seen)}" if seen else "never seen"
+
+    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+    row.append(avatar(friend))
+    col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True, valign=Gtk.Align.CENTER)
+    top = Gtk.Box(spacing=6)
+    dot = Gtk.Box(valign=Gtk.Align.CENTER)
+    dot.add_css_class("dot")
+    dot.add_css_class(status)
+    top.append(dot)
+    top.append(label(friend.get("nickname", "?"), "nickname"))
+    col.append(top)
+    col.append(label(subtitle, "subtitle"))
+    row.append(col)
+    if profile:
+        row.set_tooltip_text(
+            f"{profile['user']}@{profile['host']}\n{profile['distro']} · kernel {profile['kernel']}\n"
+            f"{profile['wm']} · {profile['terminal']} · {profile['shell']}\n"
+            f"up {duration(profile.get('uptime_s', 0))}"
+        )
+    return row
+
+
+def copy_to_clipboard(text):
+    # wl-copy works even though the widget never takes keyboard focus.
+    if shutil.which("wl-copy"):
+        subprocess.run(["wl-copy", text], check=False)
+    else:
+        Gdk.Display.get_default().get_clipboard().set(text)
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "-a", "Archmates", "Your friend code was copied",
+                          "Send it to your friend."])
+
+
+class Widget(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.add_css_class("archmates")
+        self.set_default_size(WIDTH, -1)
+        self.set_resizable(False)
+
+        LayerShell.init_for_window(self)
+        LayerShell.set_namespace(self, "archmates-widget")
+        LayerShell.set_layer(self, LayerShell.Layer.BACKGROUND)
+        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.NONE)
+        pos = load_position()
+        monitor = pick_monitor(pos.get("output"))
+        if monitor is not None:
+            LayerShell.set_monitor(self, monitor)
+        corner = str(pos.get("corner", "top-right"))
+        vertical = LayerShell.Edge.BOTTOM if corner.startswith("bottom") else LayerShell.Edge.TOP
+        horizontal = LayerShell.Edge.LEFT if corner.endswith("left") else LayerShell.Edge.RIGHT
+        for edge, margin in ((vertical, pos.get("margin_y", 60)), (horizontal, pos.get("margin_x", 40))):
+            LayerShell.set_anchor(self, edge, True)
+            LayerShell.set_margin(self, edge, int(margin))
+
+        self.card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.card.add_css_class("card")
+        self.card.set_size_request(WIDTH, -1)
+        self.set_child(self.card)
+        self.refresh()
+        GLib.timeout_add_seconds(REFRESH_SECONDS, self.refresh)
+
+    def refresh(self):
+        while (child := self.card.get_first_child()) is not None:
+            self.card.remove(child)
+        state = load_state()
+        friends = (state or {}).get("friends", [])
+        online = sum(1 for f in friends if f.get("status") == "online")
+
+        header = Gtk.Box(spacing=8)
+        icon = Gtk.Image.new_from_icon_name("system-users-symbolic")
+        icon.add_css_class("title")
+        header.append(icon)
+        title = label("Archmates", "title")
+        title.set_hexpand(True)
+        header.append(title)
+        header.append(label(f"{online}/{len(friends)} online", "count", xalign=1.0))
+        self.card.append(header)
+
+        if state is None:
+            self.card.append(label("Service stopped.\nRun: systemctl --user start archmates", "warning"))
+            return True
+        me = state.get("me", {})
+        if time.time() * 1000 - me.get("updated_ms", 0) > 120_000:
+            self.card.append(label("Service stopped (status frozen)", "warning"))
+        if me.get("update_available"):
+            self.card.append(label(f"Update available: {me['update_available']}", "notice"))
+        if me.get("invisible"):
+            self.card.append(label("You are in invisible mode", "notice"))
+
+        if not friends:
+            self.card.append(label("No friends yet.\narchmates add <code> <nickname>", "subtitle"))
+        else:
+            self.card.append(Gtk.Separator())
+            for f in sorted(friends, key=lambda f: (ORDER.get(f.get("status"), 3), f.get("nickname", "").lower())):
+                self.card.append(friend_row(f))
+
+        button = Gtk.Button(label="Copy my code", halign=Gtk.Align.END)
+        button.add_css_class("copy")
+        button.connect("clicked", lambda _b: copy_to_clipboard(me.get("code", "")))
+        self.card.append(button)
+        return True
+
+
+def on_activate(app):
+    css = Gtk.CssProvider()
+    css.load_from_string(ACCENT + DEFAULT_CSS)
+    display = Gdk.Display.get_default()
+    Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    user_css = CONFIG_DIR / "widget.css"
+    if user_css.exists():
+        custom = Gtk.CssProvider()
+        custom.load_from_path(str(user_css))
+        Gtk.StyleContext.add_provider_for_display(display, custom, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+    Widget(app).present()
+
+
+def main():
+    if not LayerShell.is_supported():
+        sys.exit("archmates-widget: this desktop does not support the layer-shell protocol (GNOME?).")
+    app = Gtk.Application(application_id="io.github.zqqdd.archmates.widget")
+    app.connect("activate", on_activate)
+    app.run([])
+
+
+if __name__ == "__main__":
+    main()

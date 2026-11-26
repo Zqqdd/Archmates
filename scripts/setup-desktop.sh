@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sets up the desktop side of archmates for the current user (no admin rights needed):
 #   - Noctalia: installs the widget and places it at the top right of the main screen
+#   - otherwise: checks what the universal widget (archmates-widget) needs
 #   - Hyprland: adds a frosted-glass blur rule behind the widget
 #
 # Used by installer.sh, and by the AUR package as `archmates-setup-desktop`.
@@ -79,7 +80,7 @@ place_widget() {
 add_blur_rule() {
   command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1 || return 0
   local dir=~/.config/hypr
-  if grep -rqs "noctalia-desktop-widget" "$dir"; then
+  if grep -rqs "archmates-widget" "$dir"; then
     return 0   # already there
   fi
 
@@ -87,14 +88,14 @@ add_blur_rule() {
   if [[ -f "$dir/hyprland.lua" ]]; then
     file="$dir/hyprland.lua"
     rule='
--- archmates: frosted glass behind Noctalia desktop widgets
-hl.layer_rule({ name = "noctalia-desktop-widgets-glass", match = { namespace = "^noctalia-desktop-widget-.*" }, blur = true, ignore_alpha = 0.05 })'
+-- archmates: frosted glass behind the archmates widget (universal or Noctalia)
+hl.layer_rule({ name = "archmates-glass", match = { namespace = "^(archmates-widget|noctalia-desktop-widget-.*)$" }, blur = true, ignore_alpha = 0.05 })'
   elif [[ -f "$dir/hyprland.conf" ]]; then
     file="$dir/hyprland.conf"
     rule='
-# archmates: frosted glass behind Noctalia desktop widgets
-layerrule = blur, ^(noctalia-desktop-widget-.*)$
-layerrule = ignorealpha 0.05, ^(noctalia-desktop-widget-.*)$'
+# archmates: frosted glass behind the archmates widget (universal or Noctalia)
+layerrule = blur, ^(archmates-widget|noctalia-desktop-widget-.*)$
+layerrule = ignorealpha 0.05, ^(archmates-widget|noctalia-desktop-widget-.*)$'
   else
     return 0
   fi
@@ -134,6 +135,16 @@ if command -v noctalia >/dev/null && noctalia msg config-get desktop_widgets.ena
   place_widget
   add_blur_rule
 else
-  echo "→ Noctalia is not running: skipping the widget (use 'archmates list' in a terminal)."
+  echo "→ Universal widget (Noctalia is not running)"
+  missing=()
+  [[ -e /usr/lib/libgtk4-layer-shell.so ]] || missing+=(gtk4-layer-shell)
+  python3 -c 'import gi; gi.require_version("Gtk", "4.0")' 2>/dev/null || missing+=(gtk4 python-gobject)
+  if (( ${#missing[@]} )); then
+    echo "  The widget needs: ${missing[*]}. Install them, then it appears within 15 s:"
+    echo "    sudo pacman -S --needed ${missing[*]}"
+  else
+    echo "  The service shows it on your desktop within 15 s (turn it off: archmates widget off)."
+  fi
+  add_blur_rule
 fi
 

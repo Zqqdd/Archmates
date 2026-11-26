@@ -370,6 +370,7 @@ pub async fn run() -> Result<()> {
         update_available: Mutex::new(None),
     });
     tokio::spawn(check_updates(shared.clone()));
+    tokio::spawn(crate::widget::supervise(Paths::detect()));
 
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(key)
