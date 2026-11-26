@@ -70,8 +70,11 @@ usage, your conversation, a message field and a "send a file" button.
 - **Messages** go directly from PC to PC, encrypted. A message written while your friend is offline waits on
   your machine and is delivered as soon as they come back. Conversations are stored locally in
   `~/.local/share/archmates/chat/`.
-- **Files** (up to 4 GB) are sent directly too, while your friend is online. Received files land in
-  `~/Downloads/Archmates/<friend>/` (your XDG download folder) and you get a notification.
+- **Files** (up to 4 GB) are sent directly too, while your friend is online. **Nothing is transferred until
+  your friend accepts**: they get a notification and an offer in the chat with Accept / Decline buttons
+  (or `archmates offers`, `archmates accept <id>`, `archmates decline <id>`). Offers expire after 5 minutes.
+  Accepted files land in `~/Downloads/Archmates/<friend>/` (your XDG download folder).
+- **Pictures** you send or receive are shown directly in the conversation.
 - **RAM and storage** usage is shared with your friends only. Turn it off with `archmates stats off`.
 
 ### Profile picture
@@ -105,7 +108,10 @@ archmates widget on     # always shown
 archmates widget off    # never shown
 ```
 
-Customise it with `~/.config/archmates/widget.toml`:
+**Drag the widget to move it**: its position is remembered. Clicking a friend opens a small floating chat
+panel above your windows, which you can move by dragging its header (Esc closes it).
+
+Or set the position by hand in `~/.config/archmates/widget.toml`:
 
 ```toml
 corner = "top-right"   # top-left, top-right, bottom-left, bottom-right

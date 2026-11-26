@@ -16,6 +16,7 @@ use tokio::net::{UnixListener, UnixStream};
 pub enum Command {
     SendMessage { to: String, text: String },
     SendFile { to: String, path: String },
+    AnswerFile { id: String, accept: bool },
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

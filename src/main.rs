@@ -78,6 +78,12 @@ enum Command {
         to: String,
         file: std::path::PathBuf,
     },
+    /// Accept a file a friend wants to send you (id shown in `archmates offers`)
+    Accept { id: String },
+    /// Decline a file a friend wants to send you
+    Decline { id: String },
+    /// List files waiting for your answer
+    Offers,
     /// Show the conversation with a friend (and mark it as read)
     Chat {
         #[arg(value_name = "NICKNAME|CODE")]
@@ -222,9 +228,33 @@ async fn main() -> Result<()> {
         Command::SendFile { to, file } => {
             let path = std::fs::canonicalize(&file)
                 .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))?;
-            println!("→ Sending {}…", path.display());
+            println!("→ Waiting for your friend to accept {}…", path.display());
             let answer = ipc::request(&ipc::Command::SendFile { to, path: path.to_string_lossy().into_owned() }).await?;
             println!("✓ {}", answer.message);
+        }
+        Command::Accept { id } => {
+            let answer = ipc::request(&ipc::Command::AnswerFile { id, accept: true }).await?;
+            println!("✓ {} (the transfer starts now)", answer.message);
+        }
+        Command::Decline { id } => {
+            let answer = ipc::request(&ipc::Command::AnswerFile { id, accept: false }).await?;
+            println!("✓ {}", answer.message);
+        }
+        Command::Offers => {
+            let state: Option<daemon::StateFile> =
+                std::fs::read_to_string(paths.state()).ok().and_then(|t| serde_json::from_str(&t).ok());
+            let offers: Vec<_> = state
+                .iter()
+                .flat_map(|s| s.friends.iter())
+                .flat_map(|f| f.offers.iter().map(move |o| (f.nickname.clone(), o.clone())))
+                .collect();
+            if offers.is_empty() {
+                println!("No file waiting for your answer.");
+            }
+            for (nick, o) in offers {
+                println!("{nick} wants to send {} ({:.1} MB)\n  archmates accept {}   |   archmates decline {}",
+                    o.name, o.size as f64 / 1_048_576.0, o.id, o.id);
+            }
         }
         Command::Chat { with, count, json } => {
             let list = FriendList::load(&paths)?;

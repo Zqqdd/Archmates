@@ -1,7 +1,10 @@
 //! File transfers, over their own protocol so big files never block presence updates.
 //!
-//! Stream layout: one JSON header line `{"name": "...", "size": 1234}\n`, then the raw bytes.
-//! The receiver answers `ok` once the whole file is written.
+//! Stream layout:
+//!   sender   → `{"name": "...", "size": 1234}\n`        (the offer)
+//!   receiver → `accept\n` or `decline\n`               (the person chooses, up to 5 min)
+//!   sender   → the raw bytes, only after `accept`
+//!   receiver → `ok` once the whole file is written
 //! Received files go to ~/Downloads/Archmates/<nickname>/ (your XDG download folder).
 
 use std::path::{Path, PathBuf};
@@ -16,7 +19,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::config::{FriendList, Paths};
 
-pub const FILE_ALPN: &[u8] = b"archmates/file/1";
+pub const FILE_ALPN: &[u8] = b"archmates/file/2";
+/// How long the receiver has to accept a file.
+pub const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// Largest file accepted.
 pub const FILE_MAX: u64 = 4 * 1024 * 1024 * 1024;
 
@@ -65,6 +70,7 @@ fn free_path(dir: &Path, name: &str) -> PathBuf {
 
 // ── Sending ─────────────────────────────────────────────────────────────────
 
+/// Sends a file once the friend accepts it. Returns the file name.
 pub async fn send(endpoint: &Endpoint, to: EndpointId, path: &Path) -> Result<String> {
     let meta = tokio::fs::metadata(path).await.with_context(|| format!("cannot read {}", path.display()))?;
     if !meta.is_file() {
@@ -77,14 +83,29 @@ pub async fn send(endpoint: &Endpoint, to: EndpointId, path: &Path) -> Result<St
     let connection = tokio::time::timeout(std::time::Duration::from_secs(20), endpoint.connect(to, FILE_ALPN))
         .await
         .map_err(|_| anyhow!("your friend is unreachable (offline?)"))??;
-    let (mut send, mut recv) = connection.open_bi().await?;
+    let (mut send, recv) = connection.open_bi().await?;
     let header = serde_json::to_string(&Header { name: name.clone(), size: meta.len() })?;
     send.write_all(header.as_bytes()).await?;
     send.write_all(b"\n").await?;
+
+    // Wait for the friend to accept (or decline) the file.
+    let mut reader = BufReader::new(recv);
+    let mut decision = String::new();
+    let read = tokio::time::timeout(ANSWER_TIMEOUT + std::time::Duration::from_secs(10), (&mut reader).take(64).read_line(&mut decision))
+        .await
+        .map_err(|_| anyhow!("your friend did not answer"))?;
+    read?;
+    match decision.trim() {
+        "accept" => {}
+        "decline" => bail!("your friend declined the file"),
+        _ => bail!("your friend did not answer"),
+    }
+
     let mut file = tokio::fs::File::open(path).await?;
     tokio::io::copy(&mut file, &mut send).await?;
     send.finish()?;
-    let answer = recv.read_to_end(64).await?;
+    let mut answer = Vec::new();
+    reader.take(64).read_to_end(&mut answer).await?;
     connection.close(0u32.into(), b"ok");
     if answer != b"ok" {
         bail!("your friend refused the file: {}", String::from_utf8_lossy(&answer));
@@ -94,8 +115,16 @@ pub async fn send(endpoint: &Endpoint, to: EndpointId, path: &Path) -> Result<St
 
 // ── Receiving ───────────────────────────────────────────────────────────────
 
+/// Asks the person whether to accept a file (friend, name, size); resolves to their answer.
+pub type OfferFn = dyn Fn(EndpointId, String, u64) -> tokio::sync::oneshot::Receiver<bool> + Send + Sync;
+/// Called once a file is saved (friend, name, saved path).
+pub type SavedFn = dyn Fn(EndpointId, String, PathBuf) + Send + Sync;
+
 #[derive(Clone)]
-pub struct FileReceiver(pub Arc<dyn Fn(EndpointId, String, PathBuf) + Send + Sync>);
+pub struct FileReceiver {
+    pub on_offer: Arc<OfferFn>,
+    pub on_saved: Arc<SavedFn>,
+}
 
 impl std::fmt::Debug for FileReceiver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -112,8 +141,9 @@ impl ProtocolHandler for FileReceiver {
             connection.close(crate::proto::CODE_NOT_FRIEND.into(), b"not a friend");
             return Ok(());
         };
-        match receive(&connection, &friend.nickname).await {
-            Ok((name, saved)) => (self.0)(id, name, saved),
+        match receive(&connection, id, &friend.nickname, &self.on_offer).await {
+            Ok(Some((name, saved))) => (self.on_saved)(id, name, saved),
+            Ok(None) => {}
             Err(err) => eprintln!("[file from {}] {err:#}", friend.nickname),
         }
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), connection.closed()).await;
@@ -121,7 +151,7 @@ impl ProtocolHandler for FileReceiver {
     }
 }
 
-async fn receive(connection: &Connection, nickname: &str) -> Result<(String, PathBuf)> {
+async fn receive(connection: &Connection, id: EndpointId, nickname: &str, on_offer: &Arc<OfferFn>) -> Result<Option<(String, PathBuf)>> {
     let (mut send, recv) = connection.accept_bi().await?;
     let mut reader = BufReader::new(recv);
     let mut line = Vec::new();
@@ -133,6 +163,17 @@ async fn receive(connection: &Connection, nickname: &str) -> Result<(String, Pat
         bail!("refused a file over 4 GB");
     }
     let name = safe_name(&header.name);
+
+    // Ask the person; no answer within 5 minutes counts as "decline".
+    let answer = on_offer(id, name.clone(), header.size);
+    let accepted = matches!(tokio::time::timeout(ANSWER_TIMEOUT, answer).await, Ok(Ok(true)));
+    if !accepted {
+        send.write_all(b"decline\n").await?;
+        send.finish()?;
+        return Ok(None);
+    }
+    send.write_all(b"accept\n").await?;
+
     let dir = download_dir().join("Archmates").join(safe_name(nickname));
     tokio::fs::create_dir_all(&dir).await?;
     let target = free_path(&dir, &name);
@@ -147,5 +188,5 @@ async fn receive(connection: &Connection, nickname: &str) -> Result<(String, Pat
     tokio::fs::rename(&partial, &target).await?;
     send.write_all(b"ok").await?;
     send.finish()?;
-    Ok((name, target))
+    Ok(Some((name, target)))
 }

@@ -96,7 +96,7 @@ local function pickAndSendFile()
   noctalia.runAsync(cmd, function(r)
     local path = noctalia.string.trim(r.stdout or "")
     if r.exitCode == 0 and path ~= "" then
-      status = "Sending " .. path:match("[^/]+$") .. "…"
+      status = "Waiting for " .. friend.nickname .. " to accept " .. path:match("[^/]+$") .. "…"
       render()
       run({ BIN, "send-file", code, path })
     end
@@ -116,14 +116,43 @@ local function bar(label, used, total)
   })
 end
 
+local IMAGE_EXT = { png = true, jpg = true, jpeg = true, webp = true, gif = true, bmp = true }
+
+local function isImage(path)
+  local ext = path and path:match("%.([%w]+)$")
+  return ext ~= nil and IMAGE_EXT[string.lower(ext)] == true and noctalia.fileExists(path)
+end
+
 local function bubble(m)
   local mine = m.dir == "out"
   local text = m.text
   if mine and not m.delivered then text = text .. "  ⏳" end
+  local content = {}
+  if isImage(m.file) then
+    table.insert(content, ui.image({ path = m.file, width = 240, height = 170, radius = 8, fit = "cover" }))
+  else
+    table.insert(content, ui.label({ text = text, fontSize = 13, color = "on_surface", maxWidth = 270 }))
+  end
+  table.insert(content, ui.label({ text = ago(m.ms), fontSize = 9, color = "on_surface_variant" }))
   return ui.row({ key = m.id, justify = if mine then "end" else "start" }, {
-    ui.column({ gap = 2, padding = 8, radius = 12, fill = if mine then "primary/0.22" else "surface_variant/0.6" }, {
-      ui.label({ text = text, fontSize = 13, color = "on_surface", maxWidth = 270 }),
-      ui.label({ text = ago(m.ms), fontSize = 9, color = "on_surface_variant" }),
+    ui.column({ gap = 4, padding = 8, radius = 12, fill = if mine then "primary/0.22" else "surface_variant/0.6" }, content),
+  })
+end
+
+local function offerCard(o)
+  return ui.column({ key = "offer-" .. o.id, gap = 8, padding = 10, radius = 12, fill = "tertiary/0.18" }, {
+    ui.row({ gap = 8, align = "center" }, {
+      ui.glyph({ name = "file-download", size = 16, color = "tertiary" }),
+      ui.label({ text = string.format("%s wants to send you %s (%.1f MB)", friend.nickname, o.name, o.size / 1048576),
+        fontSize = 12, color = "on_surface", maxWidth = 300 }),
+    }),
+    ui.row({ gap = 8, justify = "end" }, {
+      ui.button({ text = "Decline", variant = "ghost", controlSize = "sm", onClick = function()
+        run({ BIN, "decline", o.id })
+      end }),
+      ui.button({ text = "Accept", variant = "primary", controlSize = "sm", onClick = function()
+        run({ BIN, "accept", o.id }, "Receiving " .. o.name .. "…")
+      end }),
     }),
   })
 end
@@ -174,6 +203,9 @@ function render()
   end
   for _, m in messages do
     table.insert(bubbles, bubble(m))
+  end
+  for _, o in friend.offers or {} do
+    table.insert(bubbles, offerCard(o))
   end
   table.insert(rows, ui.scroll({ flexGrow = 1, gap = 6, stickToBottom = true }, bubbles))
 

@@ -86,8 +86,11 @@ separator { background-color: alpha(@fg, 0.18); min-height: 1px; }
 button.copy { font-size: 11px; padding: 2px 10px; border-radius: 10px;
   background: alpha(@fg, 0.08); border: none; color: inherit; box-shadow: none; }
 button.copy:hover { background: alpha(@fg, 0.18); }
-window.archmates-chat { background-color: @bg; }
-.chat-card { border-radius: 0; border: none; background-color: alpha(@bg, 0.92); }
+window.archmates-chat { background: transparent; }
+.chat-card { background-color: alpha(@bg, 0.92); }
+.chat-image { border-radius: 8px; }
+.offer { padding: 10px; border-radius: 12px; background-color: alpha(@accent, 0.15); }
+button.accept { background: alpha(@accent, 0.45); }
 .bubble { padding: 8px 10px; border-radius: 12px; }
 .bubble.mine { background-color: alpha(@accent, 0.25); }
 .bubble.theirs { background-color: alpha(@fg, 0.10); }
@@ -239,7 +242,7 @@ def friend_row(friend):
     row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
     row.add_css_class("friend-row")
     click = Gtk.GestureClick()
-    click.connect("released", lambda *_a: open_friend(friend.get("code")))
+    click.connect("released", lambda *_a: time.time() - LAST_DRAG > 0.3 and open_friend(friend.get("code")))
     row.add_controller(click)
     row.set_cursor_from_name("pointer")
     row.append(avatar(friend))
@@ -265,6 +268,65 @@ def friend_row(friend):
     return row
 
 
+LAST_DRAG = 0.0
+
+
+def make_draggable(window, handle, vertical, horizontal, on_end=None):
+    """Move a layer-shell window by dragging `handle` (changes its margins from the anchored edges)."""
+    drag = Gtk.GestureDrag()
+    start = {}
+
+    def begin(_g, _x, _y):
+        start["v"] = LayerShell.get_margin(window, vertical)
+        start["h"] = LayerShell.get_margin(window, horizontal)
+
+    def update(_g, dx, dy):
+        if not start:
+            return
+        h = start["h"] + (dx if horizontal == LayerShell.Edge.LEFT else -dx)
+        v = start["v"] + (dy if vertical == LayerShell.Edge.TOP else -dy)
+        LayerShell.set_margin(window, horizontal, max(0, int(h)))
+        LayerShell.set_margin(window, vertical, max(0, int(v)))
+
+    def end(_g, dx, dy):
+        global LAST_DRAG
+        if abs(dx) + abs(dy) > 6:
+            LAST_DRAG = time.time()  # so the click that ends a drag does not open a chat
+        if on_end:
+            on_end(LayerShell.get_margin(window, vertical), LayerShell.get_margin(window, horizontal))
+        start.clear()
+
+    drag.connect("drag-begin", begin)
+    drag.connect("drag-update", update)
+    drag.connect("drag-end", end)
+    handle.add_controller(drag)
+    handle.set_cursor_from_name("grab")
+
+
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+
+
+def image_preview(path, width=240, height=170):
+    """A scaled picture for the chat (None if the file is not a readable image)."""
+    if not path or not path.lower().endswith(IMAGE_EXT) or not os.path.exists(path):
+        return None
+    try:
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf
+        pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, width, height, True)
+    except (GLib.Error, ValueError, ImportError):
+        return None
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        texture = Gdk.Texture.new_for_pixbuf(pix)
+    pic = Gtk.Picture.new_for_paintable(texture)
+    pic.set_size_request(pix.get_width(), pix.get_height())
+    pic.set_can_shrink(False)
+    pic.add_css_class("chat-image")
+    return pic
+
+
 ARCHMATES = shutil.which("archmates") or str(HOME / ".local" / "bin" / "archmates")
 
 
@@ -287,21 +349,43 @@ def stat_bar(name, used, total):
     return box
 
 
+CHAT_W, CHAT_H = 400, 560
+
+
 class FriendWindow(Gtk.Window):
-    """Opens when you click a friend: profile, RAM / storage, conversation, messages and files."""
+    """Opens when you click a friend: profile, RAM / storage, conversation, messages and files.
+    A floating panel above your windows (like Noctalia's), moved by dragging its header."""
 
     def __init__(self, app, code):
         super().__init__(application=app, title="Archmates")
         self.code = code
         self.add_css_class("archmates-chat")
-        self.set_default_size(400, 560)
+        self.set_resizable(False)
+        LayerShell.init_for_window(self)
+        LayerShell.set_namespace(self, "archmates-chat")
+        LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
+        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.ON_DEMAND)
+        monitor = pick_monitor(load_position().get("output"))
+        if monitor is not None:
+            LayerShell.set_monitor(self, monitor)
+        geo = monitor.get_geometry() if monitor is not None else None
+        LayerShell.set_anchor(self, LayerShell.Edge.TOP, True)
+        LayerShell.set_anchor(self, LayerShell.Edge.LEFT, True)
+        LayerShell.set_margin(self, LayerShell.Edge.LEFT, max(0, (geo.width - CHAT_W) // 2) if geo else 200)
+        LayerShell.set_margin(self, LayerShell.Edge.TOP, max(0, (geo.height - CHAT_H) // 2) if geo else 150)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", lambda _c, keyval, _code, _state: keyval == Gdk.KEY_Escape and (self.close() or True))
+        self.add_controller(keys)
+
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         root.add_css_class("card")
         root.add_css_class("chat-card")
+        root.set_size_request(CHAT_W, CHAT_H)
         self.set_child(root)
 
         self.header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         root.append(self.header)
+        make_draggable(self, self.header, LayerShell.Edge.TOP, LayerShell.Edge.LEFT)
         root.append(Gtk.Separator())
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -361,9 +445,27 @@ class FriendWindow(Gtk.Window):
             except GLib.Error:
                 return
             if file and file.get_path():
+                self.status.set_text(f"Waiting for your friend to accept {os.path.basename(file.get_path())}…")
                 self.run(["send-file", self.code, file.get_path()])
 
         dialog.open(self, None, done)
+
+    def offer_card(self, f, o):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        card.add_css_class("offer")
+        card.append(label(f"{f.get('nickname')} wants to send you {o['name']} ({o['size'] / 1048576:.1f} MB)", "nickname"))
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        no = Gtk.Button(label="Decline")
+        no.add_css_class("copy")
+        no.connect("clicked", lambda _b: self.run(["decline", o["id"]]))
+        yes = Gtk.Button(label="Accept")
+        yes.add_css_class("copy")
+        yes.add_css_class("accept")
+        yes.connect("clicked", lambda _b: self.run(["accept", o["id"]]))
+        buttons.append(no)
+        buttons.append(yes)
+        card.append(buttons)
+        return card
 
     def refresh(self):
         f = self.friend()
@@ -385,7 +487,13 @@ class FriendWindow(Gtk.Window):
         col.append(label("online" if status == "online" else "hasn't added you yet" if status == "pending"
                          else f"last seen {ago(f['last_seen_ms'])}" if f.get("last_seen_ms") else "offline", "subtitle"))
         top.append(col)
+        close = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START)
+        close.add_css_class("copy")
+        close.connect("clicked", lambda _b: self.close())
+        top.append(close)
         self.header.append(top)
+        for o in f.get("offers", []):
+            self.header.append(self.offer_card(f, o))
         stats = p.get("stats")
         if stats:
             bars = Gtk.Box(spacing=14)
@@ -413,8 +521,11 @@ class FriendWindow(Gtk.Window):
                 b.add_css_class("bubble")
                 b.add_css_class("mine" if mine else "theirs")
                 text = m.get("text", "") + ("  ⏳" if mine and not m.get("delivered") else "")
-                t = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=36, selectable=True)
-                b.append(t)
+                picture = image_preview(m.get("file"))
+                if picture is not None:
+                    b.append(picture)
+                else:
+                    b.append(Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=36, selectable=True))
                 b.append(label(ago(m.get("ms", 0)), "time"))
                 self.messages.append(b)
             GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(1e9) or False)
@@ -458,12 +569,21 @@ class Widget(Gtk.ApplicationWindow):
         self.card.add_css_class("card")
         self.card.set_size_request(WIDTH, -1)
         self.set_child(self.card)
+        self.position = pos
+        make_draggable(self, self.card, vertical, horizontal, self.save_position)
         self.css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.signature = None
         self.refresh()
         GLib.timeout_add_seconds(REFRESH_SECONDS, self.refresh)
+
+    def save_position(self, margin_y, margin_x):
+        """Remembers where you dragged the widget (in ~/.config/archmates/widget.toml)."""
+        self.position.update(margin_x=margin_x, margin_y=margin_y)
+        lines = [f'{k} = "{v}"' if isinstance(v, str) else f"{k} = {v}" for k, v in self.position.items()]
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        (CONFIG_DIR / "widget.toml").write_text("# Position of the archmates widget (drag it to move it)\n" + "\n".join(lines) + "\n")
 
     def apply_theme(self):
         signature = theme_signature()

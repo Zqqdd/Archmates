@@ -5,7 +5,7 @@
 //! - writes everyone's status to ~/.cache/archmates/state.json for the widget;
 //! - sends a notification when a friend comes online.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -57,6 +57,22 @@ pub struct FriendState {
     /// Messages received since you last opened the conversation.
     #[serde(default)]
     pub unread: usize,
+    /// Files this friend wants to send you, waiting for your answer.
+    #[serde(default)]
+    pub offers: Vec<Offer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Offer {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+}
+
+struct PendingOffer {
+    friend: EndpointId,
+    offer: Offer,
+    answer: tokio::sync::oneshot::Sender<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +98,7 @@ struct Shared {
     friends: Mutex<BTreeMap<EndpointId, FriendState>>,
     notified: Mutex<HashSet<EndpointId>>,
     update_available: Mutex<Option<String>>,
+    offers: Mutex<HashMap<String, PendingOffer>>,
 }
 
 impl Shared {
@@ -100,10 +117,19 @@ impl Shared {
                 avatar: None,
                 pending: false,
                 unread: 0,
+                offers: Vec::new(),
             });
             entry.nickname = f.nickname.clone();
         }
         Ok(list)
+    }
+
+    /// Answers a file offer (from the widgets, the CLI or the notification).
+    fn answer_offer(&self, offer_id: &str, accept: bool) -> bool {
+        let found = self.offers.lock().unwrap().remove(offer_id);
+        let ok = found.map(|o| o.answer.send(accept).is_ok()).unwrap_or(false);
+        let _ = self.publish();
+        ok
     }
 
     fn is_friend(&self, id: &EndpointId) -> bool {
@@ -160,8 +186,11 @@ impl Shared {
         let list: Vec<FriendState> = {
             let mut friends = self.friends.lock().unwrap();
             let mut notified = self.notified.lock().unwrap();
+            let mut offers = self.offers.lock().unwrap();
+            offers.retain(|_, o| !o.answer.is_closed()); // expired (no answer in time)
             for (id, f) in friends.iter_mut() {
                 f.unread = chat::unread(&self.paths, &f.code);
+                f.offers = offers.values().filter(|o| o.friend == *id).map(|o| o.offer.clone()).collect();
                 let recent = f.last_seen_ms.is_some_and(|v| t.saturating_sub(v) < ONLINE_IF_SEEN_WITHIN_MS);
                 f.status = if invisible {
                     Status::Offline
@@ -373,6 +402,13 @@ async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate:
                 Answer { ok: true, message: format!("{nickname} is offline: the message will be sent when they come back") }
             }
         }
+        Command::AnswerFile { id, accept } => {
+            if shared.answer_offer(&id, accept) {
+                Answer { ok: true, message: if accept { "file accepted".into() } else { "file declined".into() } }
+            } else {
+                fail("this file offer has expired".into())
+            }
+        }
         Command::SendFile { to, path } => {
             let Some((id, code, nickname)) = resolve(&shared, &to) else {
                 return fail(format!("no friend named \"{to}\""));
@@ -381,7 +417,7 @@ async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate:
                 Ok(name) => {
                     let message = chat::Message {
                         id: chat::new_id(), dir: "out".into(), text: format!("📎 {name}"),
-                        ms: now_ms(), delivered: true, file: Some(name.clone()),
+                        ms: now_ms(), delivered: true, file: Some(path.clone()),
                     };
                     let _ = chat::append(&shared.paths, &code, &message);
                     let _ = shared.publish();
@@ -463,6 +499,7 @@ pub async fn run() -> Result<()> {
         me,
         friends: Mutex::new(initial),
         notified: Mutex::new(HashSet::new()),
+        offers: Mutex::new(HashMap::new()),
         update_available: Mutex::new(None),
     });
     tokio::spawn(check_updates(shared.clone()));
@@ -473,9 +510,36 @@ pub async fn run() -> Result<()> {
         .bind()
         .await
         .context("could not start the P2P network")?;
-    let on_file = {
+    let on_offer = {
         let shared = shared.clone();
-        FileReceiver(Arc::new(move |id: EndpointId, name: String, saved: std::path::PathBuf| {
+        Arc::new(move |id: EndpointId, name: String, size: u64| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let offer = Offer { id: chat::new_id(), name: name.clone(), size };
+            let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
+            shared.offers.lock().unwrap().insert(offer.id.clone(), PendingOffer { friend: id, offer: offer.clone(), answer: tx });
+            let _ = shared.publish();
+            // Notification with Accept / Decline buttons (the widgets show the same buttons).
+            let (shared, offer_id) = (shared.clone(), offer.id.clone());
+            std::thread::spawn(move || {
+                let out = std::process::Command::new("notify-send")
+                    .args(["-a", "Archmates", "-u", "critical", "--wait", "--action=accept=Accept", "--action=decline=Decline"])
+                    .arg(format!("{nickname} wants to send you a file"))
+                    .arg(format!("{name} ({:.1} MB)", size as f64 / 1_048_576.0))
+                    .output();
+                if let Ok(out) = out {
+                    match String::from_utf8_lossy(&out.stdout).trim() {
+                        "accept" => { shared.answer_offer(&offer_id, true); }
+                        "decline" => { shared.answer_offer(&offer_id, false); }
+                        _ => {}
+                    }
+                }
+            });
+            rx
+        }) as Arc<crate::transfer::OfferFn>
+    };
+    let on_saved = {
+        let shared = shared.clone();
+        Arc::new(move |id: EndpointId, name: String, saved: std::path::PathBuf| {
             let code = id.to_string();
             let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
             let message = chat::Message {
@@ -485,12 +549,13 @@ pub async fn run() -> Result<()> {
             let _ = chat::append(&shared.paths, &code, &message);
             let _ = std::process::Command::new("notify-send")
                 .args(["-a", "Archmates", "-u", "normal"])
-                .arg(format!("{nickname} sent you a file"))
+                .arg(format!("File received from {nickname}"))
                 .arg(format!("{name}\nSaved in {}", saved.parent().map(|p| p.display().to_string()).unwrap_or_default()))
                 .spawn();
             let _ = shared.publish();
-        }))
+        }) as Arc<crate::transfer::SavedFn>
     };
+    let on_file = FileReceiver { on_offer, on_saved };
     let router = Router::builder(endpoint.clone())
         .accept(ALPN, Greeter(shared.clone()))
         .accept(FILE_ALPN, on_file)
