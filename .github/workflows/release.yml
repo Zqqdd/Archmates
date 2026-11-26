@@ -1,5 +1,7 @@
 # Publishes a GitHub release when a version tag (e.g. v0.2.0) is pushed.
-# The release contains a ready-to-run archive used by the AUR package.
+# The release contains a ready-to-run Linux archive (also used by the AUR package and
+# `archmates update --install`) and the Winmates archive for Windows (also used by
+# Winmates' own update at startup).
 name: Release
 
 on:
@@ -10,7 +12,33 @@ permissions:
   contents: write
 
 jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --locked --release --features app
+      - run: cargo test --locked --release
+      - name: Package Winmates
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          NAME="winmates-$VERSION-x86_64-windows"
+          mkdir -p "dist/$NAME"
+          cp target/release/winmates.exe target/release/archmates.exe README.md LICENSE "dist/$NAME/"
+          cd dist
+          7z a -tzip "$NAME.zip" "$NAME" > /dev/null
+          sha256sum "$NAME.zip" > "$NAME.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winmates
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
   release:
+    needs: windows
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -34,9 +62,13 @@ jobs:
           cp -r packaging noctalia scripts widget "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+      - uses: actions/download-artifact@v4
+        with:
+          name: winmates
+          path: dist
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 \
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/*.sha256 \
             --title "archmates $GITHUB_REF_NAME" --generate-notes

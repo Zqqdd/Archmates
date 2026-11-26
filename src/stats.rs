@@ -28,6 +28,31 @@ pub fn set_sharing(paths: &Paths, on: bool) -> std::io::Result<()> {
     }
 }
 
+#[cfg(windows)]
+fn ram() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return None;
+    }
+    Some((status.ullTotalPhys.saturating_sub(status.ullAvailPhys), status.ullTotalPhys))
+}
+
+/// The system drive (usually C:).
+#[cfg(windows)]
+fn disk() -> Option<(u64, u64)> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let root: Vec<u16> = format!("{drive}\\").encode_utf16().chain(std::iter::once(0)).collect();
+    let (mut free, mut total) = (0u64, 0u64);
+    if unsafe { GetDiskFreeSpaceExW(root.as_ptr(), std::ptr::null_mut(), &mut total, &mut free) } == 0 {
+        return None;
+    }
+    Some((total.saturating_sub(free), total))
+}
+
+#[cfg(not(windows))]
 fn ram() -> Option<(u64, u64)> {
     let txt = std::fs::read_to_string("/proc/meminfo").ok()?;
     let field = |name: &str| -> Option<u64> {
@@ -43,6 +68,7 @@ fn ram() -> Option<(u64, u64)> {
     Some((total.saturating_sub(available), total))
 }
 
+#[cfg(not(windows))]
 fn disk() -> Option<(u64, u64)> {
     let out = std::process::Command::new("df").args(["-B1", "--output=size,used", "/"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);

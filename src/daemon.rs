@@ -234,13 +234,7 @@ fn notify(f: &FriendState) {
         Some(p) => format!("{}@{} · {}", p.user, p.host, p.distro),
         None => String::new(),
     };
-    let mut cmd = std::process::Command::new("notify-send");
-    cmd.args(["-a", "Archmates", "-u", "low"]);
-    if let Some(a) = &f.avatar {
-        cmd.args(["-i", a]);
-    }
-    cmd.arg(format!("{} is online", f.nickname)).arg(body);
-    let _ = cmd.spawn();
+    crate::platform::notify(&format!("{} is online", f.nickname), &body, f.avatar.as_deref(), false);
 }
 
 // ── Server side: answer friends who contact us ──────────────────────────────
@@ -360,11 +354,7 @@ async fn exchange(shared: &Arc<Shared>, connection: &Connection, id: EndpointId)
 
 fn notify_message(nickname: &str, text: &str) {
     let preview: String = text.chars().take(120).collect();
-    let _ = std::process::Command::new("notify-send")
-        .args(["-a", "Archmates", "-u", "normal"])
-        .arg(format!("{nickname}"))
-        .arg(preview)
-        .spawn();
+    crate::platform::notify(nickname, &preview, None, true);
 }
 
 /// Friend id and code from a nickname or a code.
@@ -379,6 +369,16 @@ async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate:
     use crate::ipc::{Answer, Command};
     let fail = |message: String| Answer { ok: false, message };
     match command {
+        Command::Ping => Answer { ok: true, message: update::CURRENT.to_string() },
+        Command::Quit => {
+            eprintln!("archmates: asked to stop");
+            // Answer first, then exit.
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                std::process::exit(0);
+            });
+            Answer { ok: true, message: "stopping".into() }
+        }
         Command::SendMessage { to, text } => {
             let Some((id, code, nickname)) = resolve(&shared, &to) else {
                 return fail(format!("no friend named \"{to}\""));
@@ -458,11 +458,12 @@ async fn check_updates(shared: Arc<Shared>) {
                 let marker = shared.paths.cache.join("update-notified");
                 let already = std::fs::read_to_string(&marker).ok().is_some_and(|v| v.trim() == latest);
                 if !already {
-                    let _ = std::process::Command::new("notify-send")
-                        .args(["-a", "Archmates", "-u", "normal"])
-                        .arg(format!("Archmates {latest} is available"))
-                        .arg(format!("You have {}. Update with: {}", update::CURRENT, update::how_to_update()))
-                        .spawn();
+                    crate::platform::notify(
+                        &format!("Archmates {latest} is available"),
+                        &format!("You have {}. Update with: {}", update::CURRENT, update::how_to_update()),
+                        None,
+                        true,
+                    );
                     let _ = write_atomic(&marker, latest.as_bytes());
                 }
                 let _ = shared.publish();
@@ -479,6 +480,10 @@ async fn check_updates(shared: Arc<Shared>) {
 // ── Main loop ───────────────────────────────────────────────────────────────
 
 pub async fn run() -> Result<()> {
+    // Only one service per user: two would fight over the same identity.
+    if crate::ipc::request(&crate::ipc::Command::Ping).await.is_ok() {
+        return Err(anyhow!("the archmates service is already running"));
+    }
     let paths = Paths::detect();
     let key = crate::config::load_or_create_key(&paths)?;
     let me = key.public();
@@ -503,6 +508,7 @@ pub async fn run() -> Result<()> {
         update_available: Mutex::new(None),
     });
     tokio::spawn(check_updates(shared.clone()));
+    #[cfg(not(windows))]
     tokio::spawn(crate::widget::supervise(Paths::detect()));
 
     let endpoint = Endpoint::builder(presets::N0)
@@ -521,17 +527,10 @@ pub async fn run() -> Result<()> {
             // Notification with Accept / Decline buttons (the widgets show the same buttons).
             let (shared, offer_id) = (shared.clone(), offer.id.clone());
             std::thread::spawn(move || {
-                let out = std::process::Command::new("notify-send")
-                    .args(["-a", "Archmates", "-u", "critical", "--wait", "--action=accept=Accept", "--action=decline=Decline"])
-                    .arg(format!("{nickname} wants to send you a file"))
-                    .arg(format!("{name} ({:.1} MB)", size as f64 / 1_048_576.0))
-                    .output();
-                if let Ok(out) = out {
-                    match String::from_utf8_lossy(&out.stdout).trim() {
-                        "accept" => { shared.answer_offer(&offer_id, true); }
-                        "decline" => { shared.answer_offer(&offer_id, false); }
-                        _ => {}
-                    }
+                let title = format!("{nickname} wants to send you a file");
+                let body = format!("{name} ({:.1} MB)", size as f64 / 1_048_576.0);
+                if let Some(accept) = crate::platform::ask(&title, &body) {
+                    shared.answer_offer(&offer_id, accept);
                 }
             });
             rx
@@ -547,11 +546,12 @@ pub async fn run() -> Result<()> {
                 ms: now_ms(), delivered: true, file: Some(saved.to_string_lossy().into_owned()),
             };
             let _ = chat::append(&shared.paths, &code, &message);
-            let _ = std::process::Command::new("notify-send")
-                .args(["-a", "Archmates", "-u", "normal"])
-                .arg(format!("File received from {nickname}"))
-                .arg(format!("{name}\nSaved in {}", saved.parent().map(|p| p.display().to_string()).unwrap_or_default()))
-                .spawn();
+            crate::platform::notify(
+                &format!("File received from {nickname}"),
+                &format!("{name}\nSaved in {}", saved.parent().map(|p| p.display().to_string()).unwrap_or_default()),
+                None,
+                true,
+            );
             let _ = shared.publish();
         }) as Arc<crate::transfer::SavedFn>
     };

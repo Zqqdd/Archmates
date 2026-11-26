@@ -3,6 +3,8 @@
 //! - The service only *checks* GitHub once a day and notifies: it never installs anything by itself.
 //! - `archmates update --install`, run by the user, downloads the latest release archive from
 //!   GitHub over HTTPS, checks its SHA-256 checksum, and runs the installer it contains.
+//! - Windows: Winmates does that by itself each time it starts (same download, same
+//!   checksum check), then puts the new programs in place of the old ones.
 
 use std::time::Duration;
 
@@ -64,7 +66,9 @@ pub fn managed_by_pacman() -> bool {
 
 /// How this copy was installed, to tell the user how to update it.
 pub fn how_to_update() -> String {
-    if managed_by_pacman() {
+    if cfg!(windows) {
+        "restart Winmates (it updates itself when it starts)".into()
+    } else if managed_by_pacman() {
         "sudo pacman -Syu".into()
     } else {
         "archmates update --install".into()
@@ -84,20 +88,18 @@ async fn download(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec
     Ok(bytes.to_vec())
 }
 
-/// Downloads release `version`, checks it, and runs its installer. Returns once installed.
-pub async fn install(version: &str) -> Result<()> {
+/// Downloads `file` from release `version` and checks it against `file.sha256`.
+async fn download_checked(version: &str, file: &str) -> Result<Vec<u8>> {
     use sha2::{Digest, Sha256};
 
     if std::env::consts::ARCH != "x86_64" {
         return Err(anyhow!("releases are only built for x86_64; build from source instead"));
     }
-    let name = format!("archmates-{version}-x86_64-linux");
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
     let client = http_client(Duration::from_secs(300))?;
-
-    println!("→ Downloading {name}.tar.gz");
-    let archive = download(&client, &format!("{base}/{name}.tar.gz"), ARCHIVE_MAX).await?;
-    let checksum_file = download(&client, &format!("{base}/{name}.tar.gz.sha256"), 4096).await?;
+    println!("→ Downloading {file}");
+    let archive = download(&client, &format!("{base}/{file}"), ARCHIVE_MAX).await?;
+    let checksum_file = download(&client, &format!("{base}/{file}.sha256"), 4096).await?;
     let expected = String::from_utf8_lossy(&checksum_file)
         .split_whitespace()
         .next()
@@ -108,6 +110,74 @@ pub async fn install(version: &str) -> Result<()> {
         return Err(anyhow!("checksum mismatch: the download is corrupted or was tampered with (nothing installed)"));
     }
     println!("→ Checksum OK");
+    Ok(archive)
+}
+
+/// Windows: downloads release `version`, checks it, and puts the new programs in place
+/// (in %LOCALAPPDATA%\Programs\Winmates). The running ones keep working until restarted.
+#[cfg(windows)]
+pub async fn install(version: &str) -> Result<()> {
+    let name = format!("winmates-{version}-x86_64-windows");
+    let archive = download_checked(version, &format!("{name}.zip")).await?;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).context("unreadable archive")?;
+    let mut files = Vec::new();
+    for wanted in WINDOWS_PROGRAMS {
+        // `<name>/winmates.exe`, whichever separator the archiver used. Only the bytes are
+        // taken: where they go is decided here, never by the archive.
+        let index = (0..zip.len())
+            .find(|&i| {
+                zip.name_for_index(i)
+                    .is_some_and(|n| n.replace('\\', "/") == format!("{name}/{wanted}"))
+            })
+            .ok_or_else(|| anyhow!("{wanted} is missing from the archive (nothing installed)"))?;
+        let mut entry = zip.by_index(index)?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+        files.push((wanted, bytes));
+    }
+    let dir = crate::platform::install_dir();
+    std::fs::create_dir_all(&dir)?;
+    for (file, bytes) in files {
+        replace_program(&dir.join(file), &bytes)?;
+    }
+    println!("→ Installed in {}", dir.display());
+    Ok(())
+}
+
+/// The programs shipped in the Windows archive: the app, and the command line (same as on Linux).
+#[cfg(windows)]
+pub const WINDOWS_PROGRAMS: [&str; 2] = ["winmates.exe", "archmates.exe"];
+
+/// Windows can't overwrite a running program, but it can rename it: the old one is moved
+/// aside (deleted at the next start, see `cleanup_old_programs`) and the new one takes its name.
+#[cfg(windows)]
+pub fn replace_program(target: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    if target.exists() {
+        let aside = target.with_extension(format!("old-{}", crate::daemon::now_ms()));
+        std::fs::rename(target, &aside).with_context(|| format!("cannot replace {}", target.display()))?;
+    }
+    let tmp = target.with_extension("new");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, target)?;
+    Ok(())
+}
+
+/// Removes programs left aside by an update (those still running stay until next time).
+#[cfg(windows)]
+pub fn cleanup_old_programs() {
+    let Ok(entries) = std::fs::read_dir(crate::platform::install_dir()) else { return };
+    for e in entries.flatten() {
+        if e.file_name().to_string_lossy().contains(".old-") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// Linux: downloads release `version`, checks it, and runs its installer. Returns once installed.
+#[cfg(not(windows))]
+pub async fn install(version: &str) -> Result<()> {
+    let name = format!("archmates-{version}-x86_64-linux");
+    let archive = download_checked(version, &format!("{name}.tar.gz")).await?;
 
     // Unpack in a fresh private folder, then run the installer shipped in the archive.
     let work = crate::config::Paths::detect().cache.join("update");

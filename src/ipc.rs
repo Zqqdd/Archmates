@@ -2,14 +2,13 @@
 //! service to send a message or a file (the service is the one holding your P2P identity).
 //!
 //! One JSON request per line, one JSON answer per line, on $XDG_RUNTIME_DIR/archmates.sock
-//! (readable by you only).
+//! (readable by you only). On Windows: the named pipe \\.\pipe\winmates-<user>, local only.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -17,6 +16,10 @@ pub enum Command {
     SendMessage { to: String, text: String },
     SendFile { to: String, path: String },
     AnswerFile { id: String, accept: bool },
+    /// "Are you running?" Answer: ok, with the service version as message.
+    Ping,
+    /// Stops the service (used by Winmates to restart it after an update, or to quit).
+    Quit,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -24,6 +27,14 @@ pub struct Answer {
     pub ok: bool,
     #[serde(default)]
     pub message: String,
+}
+
+#[cfg(windows)]
+pub fn pipe_name() -> String {
+    // One pipe per user, and per test instance (ARCHMATES_HOME).
+    let tag = std::env::var("ARCHMATES_HOME").map(|h| crate::profile::fingerprint(h.as_bytes())).unwrap_or_default();
+    let user: String = crate::platform::user_name().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    format!(r"\\.\pipe\winmates-{user}{tag}")
 }
 
 pub fn socket_path() -> PathBuf {
@@ -38,11 +49,32 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Sends one command to the service and returns its answer.
-pub async fn request(command: &Command) -> Result<Answer> {
-    let stream = UnixStream::connect(socket_path())
+#[cfg(unix)]
+async fn connect() -> Result<tokio::net::UnixStream> {
+    tokio::net::UnixStream::connect(socket_path())
         .await
-        .context("the archmates service is not running (start it: systemctl --user start archmates)")?;
-    let (read, mut write) = stream.into_split();
+        .context("the archmates service is not running (start it: systemctl --user start archmates)")
+}
+
+#[cfg(windows)]
+async fn connect() -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    for _ in 0..50 {
+        match ClientOptions::new().open(pipe_name()) {
+            Ok(client) => return Ok(client),
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(e) => return Err(e).context("the archmates service is not running (open Winmates)"),
+        }
+    }
+    Err(anyhow!("the archmates service is busy, try again"))
+}
+
+pub async fn request(command: &Command) -> Result<Answer> {
+    let stream = connect().await?;
+    let (read, mut write) = tokio::io::split(stream);
     write.write_all(serde_json::to_string(command)?.as_bytes()).await?;
     write.write_all(b"\n").await?;
     write.shutdown().await?;
@@ -56,34 +88,61 @@ pub async fn request(command: &Command) -> Result<Answer> {
 pub async fn serve<F, Fut>(handle: F) -> Result<()>
 where
     F: Fn(Command) -> Fut + Clone + Send + 'static,
-    Fut: std::future::Future<Output = Answer> + Send,
+    Fut: std::future::Future<Output = Answer> + Send + 'static,
 {
-    let path = socket_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).with_context(|| format!("cannot open {}", path.display()))?;
+    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        let path = socket_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).with_context(|| format!("cannot open {}", path.display()))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        loop {
+            let (stream, _) = listener.accept().await?;
+            tokio::spawn(answer_one(stream, handle.clone()));
+        }
     }
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let handle = handle.clone();
-        tokio::spawn(async move {
-            let (read, mut write) = stream.into_split();
-            let mut line = String::new();
-            if BufReader::new(read).read_line(&mut line).await.is_err() {
-                return;
-            }
-            let answer = match serde_json::from_str::<Command>(&line) {
-                Ok(cmd) => handle(cmd).await,
-                Err(err) => Answer { ok: false, message: format!("bad request: {err}") },
-            };
-            let mut out = serde_json::to_string(&answer).unwrap_or_default();
-            out.push('\n');
-            let _ = write.write_all(out.as_bytes()).await;
-        });
+    #[cfg(windows)]
+    {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = pipe_name();
+        // first_pipe_instance: fails if another service already runs for this user.
+        let mut server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .reject_remote_clients(true)
+            .create(&name)
+            .with_context(|| format!("cannot open {name} (is the service already running?)"))?;
+        loop {
+            server.connect().await?;
+            let client = server;
+            server = ServerOptions::new().reject_remote_clients(true).create(&name)?;
+            tokio::spawn(answer_one(client, handle.clone()));
+        }
     }
+}
+
+/// Reads one command from a client and writes the answer.
+async fn answer_one<S, F, Fut>(stream: S, handle: F)
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+    F: Fn(Command) -> Fut,
+    Fut: std::future::Future<Output = Answer>,
+{
+    let (read, mut write) = tokio::io::split(stream);
+    let mut line = String::new();
+    if BufReader::new(read).read_line(&mut line).await.is_err() {
+        return;
+    }
+    let answer = match serde_json::from_str::<Command>(&line) {
+        Ok(cmd) => handle(cmd).await,
+        Err(err) => Answer { ok: false, message: format!("bad request: {err}") },
+    };
+    let mut out = serde_json::to_string(&answer).unwrap_or_default();
+    out.push('\n');
+    let _ = write.write_all(out.as_bytes()).await;
 }

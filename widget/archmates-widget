@@ -103,7 +103,9 @@ button.ghost:hover { background: alpha(@fg, 0.10); }
 button.send { background: @accent; color: @bg; border: none; box-shadow: none; border-radius: 10px; min-width: 34px; min-height: 34px; }
 entry.chat-entry { min-height: 34px; border-radius: 10px; border: 1px solid alpha(@fg, 0.25); background: alpha(@bg, 0.35); padding: 0 10px; }
 entry.chat-entry:focus-within { border-color: @accent; }
-.chat-image { border-radius: 8px; }
+.chat-image { border-radius: 8px; transition: filter 150ms ease; }
+/* Pictures are blurred while the chat panel is not the active window. */
+.chat-image.blurred { filter: blur(18px); }
 .offer { padding: 10px; border-radius: 12px; background-color: alpha(@accent, 0.15); }
 button.accept { background: alpha(@accent, 0.45); }
 .bubble { padding: 8px 10px; border-radius: 12px; }
@@ -461,6 +463,9 @@ class FriendWindow(Gtk.Window):
         self.status = label("", "subtitle")
         root.append(self.status)
 
+        self.pictures = []
+        # Pictures are blurred whenever you are not on this panel (another window is active).
+        self.connect("notify::is-active", lambda *_: self.apply_blur())
         self.last_count = -1
         self.refresh()
         GLib.timeout_add_seconds(3, self.refresh)
@@ -572,6 +577,7 @@ class FriendWindow(Gtk.Window):
             self.last_count = len(messages)
             while (child := self.messages.get_first_child()) is not None:
                 self.messages.remove(child)
+            self.pictures = []
             if not messages:
                 self.messages.append(label("No messages yet. Say hi!", "empty"))
             for m in messages:
@@ -583,6 +589,7 @@ class FriendWindow(Gtk.Window):
                 text = m.get("text", "") + ("  ⏳" if mine and not m.get("delivered") else "")
                 picture = image_preview(m.get("file"))
                 if picture is not None:
+                    self.pictures.append(picture)
                     b.append(picture)
                 else:
                     msg = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=32, selectable=True)
@@ -591,8 +598,16 @@ class FriendWindow(Gtk.Window):
                     b.append(msg)
                 b.append(label(ago(m.get("ms", 0)), "time"))
                 self.messages.append(b)
+            self.apply_blur()
             GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(1e9) or False)
         return True
+
+    def apply_blur(self):
+        for pic in self.pictures:
+            if self.is_active():
+                pic.remove_css_class("blurred")
+            else:
+                pic.add_css_class("blurred")
 
 
 def copy_to_clipboard(text):

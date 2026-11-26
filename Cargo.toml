@@ -1,7 +1,26 @@
 [package]
 name = "archmates"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
+default-run = "archmates"
+
+[lib]
+name = "archmates"
+path = "src/lib.rs"
+
+[[bin]]
+name = "archmates"
+path = "src/main.rs"
+
+# Winmates: the Windows client (window: friends, chat, files, settings).
+# Also runs on Linux as a desktop app: cargo build --release --features app
+[[bin]]
+name = "winmates"
+path = "src/bin/winmates.rs"
+required-features = ["app"]
+
+[features]
+app = ["dep:eframe", "dep:rfd"]
 
 [dependencies]
 anyhow = "1.0.105"
@@ -14,3 +33,16 @@ serde_json = "1.0.154"
 sha2 = "0.10"
 tokio = { version = "1.54.1", features = ["full"] }
 toml = "1.2.3"
+getrandom = "0.4"
+eframe = { version = "0.33", optional = true }
+rfd = { version = "0.15", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_Storage_FileSystem",
+] }
+tauri-winrt-notification = "0.7"
+zip = { version = "2", default-features = false, features = ["deflate"] }
