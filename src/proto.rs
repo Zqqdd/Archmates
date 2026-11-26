@@ -1,32 +1,32 @@
-//! Protocole entre deux PC.
+//! Wire protocol between two machines.
 //!
-//! Chaque échange : une connexion QUIC chiffrée (Iroh), un flux bidirectionnel,
-//! une requête JSON, une réponse. Seuls les amis réciproques sont acceptés :
-//! la connexion est authentifiée par la clé publique de l'autre PC.
+//! Each exchange: one encrypted QUIC connection (Iroh), one bidirectional
+//! stream, one JSON request, one response. Only mutual friends are accepted:
+//! the connection is authenticated by the other machine's public key.
 
 use serde::{Deserialize, Serialize};
 
-use crate::profil::Profil;
+use crate::profile::Profile;
 
-/// Identifiant du protocole (doit être identique des deux côtés).
+/// Protocol identifier (must match on both sides).
 pub const ALPN: &[u8] = b"archmates/presence/1";
 
-/// Taille maximale d'une requête ou d'une réponse JSON.
+/// Maximum size of a JSON request or response.
 pub const JSON_MAX: usize = 64 * 1024;
 
-/// Code de fermeture quand l'autre ne nous a pas (encore) ajouté.
-pub const CODE_PAS_AMI: u32 = 403;
+/// Close code used when the other side has not added us (yet).
+pub const CODE_NOT_FRIEND: u32 = 403;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Requete {
-    /// « Je suis en ligne, voici mon profil. Et toi ? »
-    Bonjour { profil: Profil },
-    /// « Envoie-moi ta photo de profil. » Réponse : les octets bruts de l'image.
+pub enum Request {
+    /// "I'm online, here is my profile. How about you?"
+    Hello { profile: Profile },
+    /// "Send me your profile picture." Response: the raw image bytes.
     Avatar,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Reponse {
-    pub profil: Profil,
+pub struct Response {
+    pub profile: Profile,
 }

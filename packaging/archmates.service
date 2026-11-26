@@ -1,5 +1,5 @@
 [Unit]
-Description=Archmates : présence pair à pair (vois tes amis en ligne)
+Description=Archmates peer-to-peer presence (see when your friends are online)
 After=graphical-session.target network-online.target
 PartOf=graphical-session.target
 

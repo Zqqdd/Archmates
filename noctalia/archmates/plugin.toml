@@ -1,6 +1,6 @@
-# Widget de bureau « Amis » : affiche l'état écrit par le service archmates
+# "Archmates" desktop widget: shows the state written by the archmates service
 id = "archmates/archmates"
-name = "Amis"
+name = "Archmates"
 version = "0.1.0"
 plugin_api = 43
 author = "archmates"
@@ -8,8 +8,8 @@ license = "MIT"
 dependencies = []
 tags = ["desktop", "social"]
 icon = "users"
-description = "Tes amis CachyOS/Arch en pair à pair : qui est en ligne."
+description = "Your CachyOS/Arch friends, peer to peer: who is online."
 
 [[desktop_widget]]
-id = "liste"
-entry = "liste.luau"
+id = "friends"
+entry = "friends.luau"

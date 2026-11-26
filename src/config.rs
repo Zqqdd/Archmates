@@ -1,14 +1,14 @@
-//! Fichiers locaux : clé secrète, liste d'amis, mode invisible, état pour le widget.
+//! Local files: secret key, friends list, invisible mode, state for the widget.
 //!
-//! Tout est rangé selon les conventions XDG :
-//!   ~/.local/share/archmates/cle.secrete   identité (32 octets, lisible par toi seul)
-//!   ~/.local/share/archmates/amis.toml     ta liste d'amis
-//!   ~/.local/share/archmates/invisible     présent = mode invisible
-//!   ~/.cache/archmates/etat.json           état des amis, lu par le widget Noctalia
-//!   ~/.cache/archmates/avatars/            photos de profil des amis
+//! Everything follows the XDG conventions:
+//!   ~/.local/share/archmates/secret.key     your identity (32 bytes, readable by you only)
+//!   ~/.local/share/archmates/friends.toml   your friends list
+//!   ~/.local/share/archmates/invisible      present = invisible mode
+//!   ~/.cache/archmates/state.json           friends' status, read by the Noctalia widget
+//!   ~/.cache/archmates/avatars/             friends' profile pictures
 //!
-//! La variable ARCHMATES_HOME remplace ces deux dossiers (utile pour tester deux
-//! instances sur le même PC).
+//! The ARCHMATES_HOME variable replaces both folders (handy to test several
+//! instances on the same machine).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,19 +20,19 @@ use anyhow::{Context, Result, bail};
 use iroh::{EndpointId, SecretKey};
 use serde::{Deserialize, Serialize};
 
-pub struct Chemins {
-    pub donnees: PathBuf,
+pub struct Paths {
+    pub data: PathBuf,
     pub cache: PathBuf,
 }
 
-impl Chemins {
-    pub fn detecter() -> Self {
+impl Paths {
+    pub fn detect() -> Self {
         if let Ok(base) = std::env::var("ARCHMATES_HOME") {
             let base = PathBuf::from(base);
-            return Self { donnees: base.join("donnees"), cache: base.join("cache") };
+            return Self { data: base.join("data"), cache: base.join("cache") };
         }
         let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
-        let donnees = std::env::var("XDG_DATA_HOME")
+        let data = std::env::var("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".local/share"))
             .join("archmates");
@@ -40,105 +40,105 @@ impl Chemins {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".cache"))
             .join("archmates");
-        Self { donnees, cache }
+        Self { data, cache }
     }
 
-    pub fn cle(&self) -> PathBuf { self.donnees.join("cle.secrete") }
-    pub fn amis(&self) -> PathBuf { self.donnees.join("amis.toml") }
-    pub fn invisible(&self) -> PathBuf { self.donnees.join("invisible") }
-    pub fn etat(&self) -> PathBuf { self.cache.join("etat.json") }
+    pub fn secret_key(&self) -> PathBuf { self.data.join("secret.key") }
+    pub fn friends(&self) -> PathBuf { self.data.join("friends.toml") }
+    pub fn invisible(&self) -> PathBuf { self.data.join("invisible") }
+    pub fn state(&self) -> PathBuf { self.cache.join("state.json") }
     pub fn avatars(&self) -> PathBuf { self.cache.join("avatars") }
 
-    pub fn est_invisible(&self) -> bool { self.invisible().exists() }
+    pub fn is_invisible(&self) -> bool { self.invisible().exists() }
 }
 
-/// Charge la clé secrète, ou en crée une la première fois.
-pub fn charger_ou_creer_cle(ch: &Chemins) -> Result<SecretKey> {
-    let p = ch.cle();
+/// Loads the secret key, or creates one on first run.
+pub fn load_or_create_key(paths: &Paths) -> Result<SecretKey> {
+    let p = paths.secret_key();
     if p.exists() {
-        let octets = fs::read(&p).with_context(|| format!("lecture de {}", p.display()))?;
-        let tab: [u8; 32] = octets
+        let bytes = fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
+        let arr: [u8; 32] = bytes
             .as_slice()
             .try_into()
-            .context("clé secrète corrompue (taille différente de 32 octets)")?;
-        return Ok(SecretKey::from_bytes(&tab));
+            .context("corrupted secret key (not 32 bytes long)")?;
+        return Ok(SecretKey::from_bytes(&arr));
     }
-    fs::create_dir_all(&ch.donnees)?;
-    fs::set_permissions(&ch.donnees, fs::Permissions::from_mode(0o700))?;
-    let cle = SecretKey::generate();
+    fs::create_dir_all(&paths.data)?;
+    fs::set_permissions(&paths.data, fs::Permissions::from_mode(0o700))?;
+    let key = SecretKey::generate();
     let mut f = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&p)?;
-    f.write_all(&cle.to_bytes())?;
-    Ok(cle)
+    f.write_all(&key.to_bytes())?;
+    Ok(key)
 }
 
-// ── Liste d'amis ─────────────────────────────────────────────────────────────
+// ── Friends list ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ami {
-    pub surnom: String,
+pub struct Friend {
+    pub nickname: String,
     pub code: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct ListeAmis {
-    #[serde(default, rename = "ami")]
-    pub amis: Vec<Ami>,
+pub struct FriendList {
+    #[serde(default, rename = "friend")]
+    pub friends: Vec<Friend>,
 }
 
-impl ListeAmis {
-    pub fn charger(ch: &Chemins) -> Result<Self> {
-        let p = ch.amis();
+impl FriendList {
+    pub fn load(paths: &Paths) -> Result<Self> {
+        let p = paths.friends();
         if !p.exists() {
             return Ok(Self::default());
         }
         let txt = fs::read_to_string(&p)?;
-        toml::from_str(&txt).with_context(|| format!("{} est mal formé", p.display()))
+        toml::from_str(&txt).with_context(|| format!("{} is malformed", p.display()))
     }
 
-    pub fn enregistrer(&self, ch: &Chemins) -> Result<()> {
-        fs::create_dir_all(&ch.donnees)?;
+    pub fn save(&self, paths: &Paths) -> Result<()> {
+        fs::create_dir_all(&paths.data)?;
         let txt = format!(
-            "# Ta liste d'amis (modifiable à la main, ou avec « archmates add / remove »)\n\n{}",
+            "# Your friends list (edit by hand, or with `archmates add` / `archmates remove`)\n\n{}",
             toml::to_string_pretty(self)?
         );
-        ecrire_atomique(&ch.amis(), txt.as_bytes())
+        write_atomic(&paths.friends(), txt.as_bytes())
     }
 
-    /// Amis dont le code est valide, indexés par identifiant.
-    pub fn par_id(&self) -> BTreeMap<EndpointId, Ami> {
-        self.amis
+    /// Friends with a valid code, indexed by endpoint id.
+    pub fn by_id(&self) -> BTreeMap<EndpointId, Friend> {
+        self.friends
             .iter()
-            .filter_map(|a| a.code.parse::<EndpointId>().ok().map(|id| (id, a.clone())))
+            .filter_map(|f| f.code.parse::<EndpointId>().ok().map(|id| (id, f.clone())))
             .collect()
     }
 
-    pub fn ajouter(&mut self, code: &str, surnom: &str) -> Result<()> {
-        let id: EndpointId = code.trim().parse().context("ce code d'ami n'est pas valide")?;
-        if self.par_id().contains_key(&id) {
-            bail!("cet ami est déjà dans ta liste");
+    pub fn add(&mut self, code: &str, nickname: &str) -> Result<()> {
+        let id: EndpointId = code.trim().parse().context("this friend code is not valid")?;
+        if self.by_id().contains_key(&id) {
+            bail!("this friend is already in your list");
         }
-        self.amis.push(Ami { surnom: surnom.to_string(), code: id.to_string() });
+        self.friends.push(Friend { nickname: nickname.to_string(), code: id.to_string() });
         Ok(())
     }
 
-    pub fn retirer(&mut self, qui: &str) -> bool {
-        let avant = self.amis.len();
-        self.amis.retain(|a| a.surnom != qui && a.code != qui);
-        self.amis.len() != avant
+    pub fn remove(&mut self, who: &str) -> bool {
+        let before = self.friends.len();
+        self.friends.retain(|f| f.nickname != who && f.code != who);
+        self.friends.len() != before
     }
 }
 
-/// Écrit via un fichier temporaire puis renomme : le widget ne lit jamais un fichier à moitié écrit.
-pub fn ecrire_atomique(p: &Path, contenu: &[u8]) -> Result<()> {
-    if let Some(dossier) = p.parent() {
-        fs::create_dir_all(dossier)?;
+/// Writes to a temporary file then renames it: the widget never reads a half-written file.
+pub fn write_atomic(p: &Path, content: &[u8]) -> Result<()> {
+    if let Some(dir) = p.parent() {
+        fs::create_dir_all(dir)?;
     }
     let tmp = p.with_extension("tmp");
-    fs::write(&tmp, contenu)?;
+    fs::write(&tmp, content)?;
     fs::rename(&tmp, p)?;
     Ok(())
 }

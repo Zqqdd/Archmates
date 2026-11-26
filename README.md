@@ -1,72 +1,75 @@
 # archmates
 
-Une liste d'amis **pair à pair** pour CachyOS / Arch Linux : vois quand tes amis sont en ligne, avec leur profil
-(nom, machine, distro, noyau, WM…) et leur photo, directement sur ton bureau Noctalia.
+> 🤖 **This project was almost entirely written by [Claude](https://claude.ai), Anthropic's AI assistant**
+> (through Claude Code). The repository owner directed the idea, the design choices and the testing.
 
-Aucun compte, aucun serveur à toi : ta liste d'amis reste sur ton PC, et les PC se parlent directement,
-de façon chiffrée, grâce à [Iroh](https://iroh.computer).
+A **peer-to-peer** friends list for CachyOS / Arch Linux: see when your friends are online, with their profile
+(user, host, distro, kernel, WM…) and their picture, right on your Noctalia desktop.
 
-## Installation
+No accounts, no servers of your own: your friends list stays on your machine, and machines talk to each other
+directly over encrypted connections, powered by [Iroh](https://iroh.computer).
 
-Il faut Rust (`sudo pacman -S rustup && rustup default stable`), puis :
+## Install
+
+You need Rust (`sudo pacman -S rustup && rustup default stable`), then:
 
 ```bash
 ./installer.sh
 ```
 
-Le script compile, installe la commande `archmates` dans `~/.local/bin`, démarre le service de présence
-(systemd utilisateur) et, si tu utilises Noctalia, installe le widget « Amis ». Aucun mot de passe n'est demandé.
+The script builds the project, installs the `archmates` command to `~/.local/bin`, starts the presence service
+(systemd user unit) and, if you use Noctalia, installs the "Archmates" widget. No password is needed.
 
-## Utilisation
+## Usage
 
 ```bash
-archmates code                    # ton code d'ami, à envoyer à tes amis
-archmates add <code> <nickname>   # ajoute un ami (il doit t'ajouter aussi)
-archmates list                    # qui est en ligne
-archmates remove <nickname>       # retire un ami
-archmates invisible on|off        # mode invisible
-amis profil                  # ce que tes amis voient de toi
+archmates code                     # your friend code, to send to your friends
+archmates add <code> <nickname>    # add a friend (they must add you too)
+archmates list                     # who is online
+archmates remove <nickname>        # remove a friend
+archmates invisible on|off         # invisible mode
+archmates profile                  # what your friends see of you
 ```
 
-Pour placer le widget sur ton bureau : `noctalia msg desktop-widgets-edit`.
+To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
 
-## Comment ça marche
+## How it works
 
 ```
- Ton PC                                         PC d'un ami
-┌─────────────────────┐   connexion directe    ┌─────────────────────┐
-│ amis.toml (local)   │◄══ chiffrée (QUIC) ═══►│ amis.toml (local)   │
-│ service archmates daemon │   « bonjour » + profil │ service archmates daemon │
-│ widget Amis         │                        │ widget Amis         │
-└─────────────────────┘                        └─────────────────────┘
+ Your PC                                        A friend's PC
+┌─────────────────────────┐   direct encrypted  ┌─────────────────────────┐
+│ friends.toml (local)    │◄═══ connection ═══►│ friends.toml (local)    │
+│ archmates daemon        │   hello + profile   │ archmates daemon        │
+│ Archmates widget        │       (QUIC)        │ Archmates widget        │
+└─────────────────────────┘                     └─────────────────────────┘
 ```
 
-1. **Identité** : au premier lancement, une clé secrète est créée dans `~/.local/share/archmates/cle.secrete`.
-   Ton code d'ami est la clé publique correspondante.
-2. **Amitié réciproque** : un PC n'accepte que les connexions des clés présentes dans son `amis.toml`.
-   Tant que ton ami ne t'a pas ajouté, il apparaît en jaune : « ne t'a pas encore ajouté ».
-3. **Présence** : toutes les 30 s, le service contacte chaque ami et échange les profils.
-   Un ami est « en ligne » si un échange a réussi il y a moins de 75 s.
-4. **Photos** : chaque profil contient l'empreinte de la photo. Elle n'est retéléchargée que si elle change.
-5. **Widget** : le service écrit `~/.cache/archmates/etat.json`, que le widget Noctalia relit toutes les 5 s.
+1. **Identity**: on first run, a secret key is created in `~/.local/share/archmates/secret.key`.
+   Your friend code is the matching public key.
+2. **Mutual friendship**: a machine only accepts connections from keys listed in its `friends.toml`.
+   Until your friend adds you back, they show up in yellow: "hasn't added you yet".
+3. **Presence**: every 30 s, the service contacts each friend and exchanges profiles.
+   A friend is "online" if an exchange succeeded less than 75 s ago.
+4. **Pictures**: each profile carries a fingerprint of the picture, so it is only downloaded again when it changes.
+5. **Widget**: the service writes `~/.cache/archmates/state.json`, which the Noctalia widget reads every 5 s.
 
-Iroh perce les box et les routeurs (*hole punching*) pour une connexion directe. Quand c'est impossible,
-le trafic passe par un relais public d'Iroh, qui ne voit que des données chiffrées.
+Iroh punches through routers and NATs (*hole punching*) to get a direct connection. When that is impossible,
+traffic goes through a public Iroh relay, which only ever sees encrypted data.
 
-## Organisation du code
+## Code layout
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `src/main.rs` | les commandes (`archmates code`, `add`, `list`…) |
-| `src/config.rs` | fichiers locaux : clé, liste d'amis, mode invisible |
-| `src/profil.rs` | construit ton profil (distro, noyau, photo…) |
-| `src/proto.rs` | le format des messages échangés entre PC |
-| `src/daemon.rs` | le service : écoute, contacte les amis, écrit l'état, notifications |
-| `noctalia/archmates/` | le widget de bureau (Luau) |
-| `packaging/archmates.service` | le service systemd utilisateur |
+| `src/main.rs` | the commands (`archmates code`, `add`, `list`…) |
+| `src/config.rs` | local files: key, friends list, invisible mode |
+| `src/profile.rs` | builds your profile (distro, kernel, picture…) |
+| `src/proto.rs` | the format of the messages exchanged between machines |
+| `src/daemon.rs` | the service: listens, contacts friends, writes the state, notifications |
+| `noctalia/archmates/` | the desktop widget (Luau) |
+| `packaging/archmates.service` | the systemd user unit |
 
-## Limites du prototype
+## Prototype limitations
 
-- Un ami connecté directement voit ton adresse IP (normal en pair à pair).
-- Si tu perds `cle.secrete`, ton code change : sauvegarde ce fichier.
-- Pas encore de « joue à… / écoute… », ni de PKGBUILD.
+- A directly connected friend can see your IP address (normal for peer to peer).
+- If you lose `secret.key`, your code changes: back up that file.
+- No "playing… / listening to…" status yet, no AUR package yet.

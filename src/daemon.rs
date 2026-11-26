@@ -1,9 +1,9 @@
-//! Le service de présence (« archmates daemon »).
+//! The presence service (`archmates daemon`).
 //!
-//! - écoute les connexions entrantes de tes amis et leur répond avec ton profil ;
-//! - toutes les 30 s, contacte chacun de tes amis ;
-//! - écrit l'état de tout le monde dans ~/.cache/archmates/etat.json pour le widget ;
-//! - envoie une notification quand un ami se connecte.
+//! - listens for incoming connections from your friends and answers with your profile;
+//! - every 30 s, contacts each of your friends;
+//! - writes everyone's status to ~/.cache/archmates/state.json for the widget;
+//! - sends a notification when a friend comes online.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -15,355 +15,353 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointId};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Chemins, ListeAmis, ecrire_atomique};
-use crate::profil::{AVATAR_MAX, Profil, empreinte, lire_avatar};
-use crate::proto::{ALPN, CODE_PAS_AMI, JSON_MAX, Reponse, Requete};
+use crate::config::{Friend, FriendList, Paths, write_atomic};
+use crate::profile::{AVATAR_MAX, Profile, fingerprint, read_avatar};
+use crate::proto::{ALPN, CODE_NOT_FRIEND, JSON_MAX, Request, Response};
 
-const INTERVALLE: Duration = Duration::from_secs(30);
-const DELAI_CONNEXION: Duration = Duration::from_secs(20);
-/// Un ami est « en ligne » si on a échangé avec lui il y a moins de ça.
-const EN_LIGNE_SI_MOINS_DE_MS: u64 = 75_000;
+const INTERVAL: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// A friend is "online" if we exchanged with them less than this long ago.
+const ONLINE_IF_SEEN_WITHIN_MS: u64 = 75_000;
 
-fn maintenant_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-// ── État partagé, tel qu'écrit dans etat.json ───────────────────────────────
+// ── Shared state, as written to state.json ──────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Statut {
-    EnLigne,
-    HorsLigne,
-    /// L'ami ne t'a pas encore ajouté de son côté.
-    EnAttente,
+pub enum Status {
+    Online,
+    Offline,
+    /// The friend has not added you on their side yet.
+    Pending,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EtatAmi {
-    pub surnom: String,
+pub struct FriendState {
+    pub nickname: String,
     pub code: String,
-    pub statut: Statut,
-    /// Dernier échange réussi (ms depuis 1970), conservé entre les redémarrages.
-    pub vu_ms: Option<u64>,
-    pub profil: Option<Profil>,
-    /// Chemin local de sa photo de profil (en cache).
+    pub status: Status,
+    /// Last successful exchange (ms since 1970), kept across restarts.
+    pub last_seen_ms: Option<u64>,
+    pub profile: Option<Profile>,
+    /// Local path of their cached profile picture.
     pub avatar: Option<String>,
     #[serde(default)]
-    pub en_attente: bool,
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Moi {
+pub struct Me {
     pub code: String,
     pub invisible: bool,
-    pub maj_ms: u64,
+    pub updated_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FichierEtat {
-    pub moi: Moi,
-    pub amis: Vec<EtatAmi>,
+pub struct StateFile {
+    pub me: Me,
+    pub friends: Vec<FriendState>,
 }
 
-struct Partage {
-    ch: Chemins,
-    moi: EndpointId,
-    amis: Mutex<BTreeMap<EndpointId, EtatAmi>>,
-    deja_notifies: Mutex<HashSet<EndpointId>>,
+struct Shared {
+    paths: Paths,
+    me: EndpointId,
+    friends: Mutex<BTreeMap<EndpointId, FriendState>>,
+    notified: Mutex<HashSet<EndpointId>>,
 }
 
-impl Partage {
-    /// Synchronise l'état avec amis.toml (pris en compte sans redémarrer le service).
-    fn recharger_liste(&self) -> Result<BTreeMap<EndpointId, crate::config::Ami>> {
-        let liste = ListeAmis::charger(&self.ch)?.par_id();
-        let mut amis = self.amis.lock().unwrap();
-        amis.retain(|id, _| liste.contains_key(id));
-        for (id, a) in &liste {
-            let e = amis.entry(*id).or_insert_with(|| EtatAmi {
-                surnom: a.surnom.clone(),
-                code: a.code.clone(),
-                statut: Statut::HorsLigne,
-                vu_ms: None,
-                profil: None,
+impl Shared {
+    /// Syncs the state with friends.toml (picked up without restarting the service).
+    fn reload_list(&self) -> Result<BTreeMap<EndpointId, Friend>> {
+        let list = FriendList::load(&self.paths)?.by_id();
+        let mut friends = self.friends.lock().unwrap();
+        friends.retain(|id, _| list.contains_key(id));
+        for (id, f) in &list {
+            let entry = friends.entry(*id).or_insert_with(|| FriendState {
+                nickname: f.nickname.clone(),
+                code: f.code.clone(),
+                status: Status::Offline,
+                last_seen_ms: None,
+                profile: None,
                 avatar: None,
-                en_attente: false,
+                pending: false,
             });
-            e.surnom = a.surnom.clone();
+            entry.nickname = f.nickname.clone();
         }
-        Ok(liste)
+        Ok(list)
     }
 
-    fn est_ami(&self, id: &EndpointId) -> bool {
-        ListeAmis::charger(&self.ch).map(|l| l.par_id().contains_key(id)).unwrap_or(false)
+    fn is_friend(&self, id: &EndpointId) -> bool {
+        FriendList::load(&self.paths).map(|l| l.by_id().contains_key(id)).unwrap_or(false)
     }
 
-    /// Enregistre un échange réussi avec un ami.
-    fn contact(&self, id: EndpointId, profil: Profil) {
-        let mut amis = self.amis.lock().unwrap();
-        if let Some(e) = amis.get_mut(&id) {
-            e.vu_ms = Some(maintenant_ms());
-            e.profil = Some(profil);
-            e.en_attente = false;
-        }
-    }
-
-    fn marquer_en_attente(&self, id: EndpointId, oui: bool) {
-        if let Some(e) = self.amis.lock().unwrap().get_mut(&id) {
-            e.en_attente = oui;
+    /// Records a successful exchange with a friend.
+    fn seen(&self, id: EndpointId, profile: Profile) {
+        let mut friends = self.friends.lock().unwrap();
+        if let Some(f) = friends.get_mut(&id) {
+            f.last_seen_ms = Some(now_ms());
+            f.profile = Some(profile);
+            f.pending = false;
         }
     }
 
-    fn avatar_a_jour(&self, id: &EndpointId, empreinte_distante: &Option<String>) -> bool {
-        let amis = self.amis.lock().unwrap();
-        let Some(e) = amis.get(id) else { return true };
-        let Some(emp) = empreinte_distante else { return true };
-        let fichier = self.ch.avatars().join(format!("{id}-{emp}"));
-        e.avatar.as_deref() == Some(fichier.to_string_lossy().as_ref()) && fichier.exists()
+    fn set_pending(&self, id: EndpointId, pending: bool) {
+        if let Some(f) = self.friends.lock().unwrap().get_mut(&id) {
+            f.pending = pending;
+        }
     }
 
-    fn enregistrer_avatar(&self, id: EndpointId, octets: &[u8]) -> Result<()> {
-        let emp = empreinte(octets);
-        let dossier = self.ch.avatars();
-        std::fs::create_dir_all(&dossier)?;
-        // Supprime les anciennes photos de cet ami.
-        for entree in std::fs::read_dir(&dossier)?.flatten() {
-            if entree.file_name().to_string_lossy().starts_with(&format!("{id}-")) {
-                let _ = std::fs::remove_file(entree.path());
+    fn avatar_up_to_date(&self, id: &EndpointId, remote_hash: &Option<String>) -> bool {
+        let friends = self.friends.lock().unwrap();
+        let Some(f) = friends.get(id) else { return true };
+        let Some(hash) = remote_hash else { return true };
+        let file = self.paths.avatars().join(format!("{id}-{hash}"));
+        f.avatar.as_deref() == Some(file.to_string_lossy().as_ref()) && file.exists()
+    }
+
+    fn save_avatar(&self, id: EndpointId, bytes: &[u8]) -> Result<()> {
+        let hash = fingerprint(bytes);
+        let dir = self.paths.avatars();
+        std::fs::create_dir_all(&dir)?;
+        // Remove this friend's older pictures.
+        for entry in std::fs::read_dir(&dir)?.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&format!("{id}-")) {
+                let _ = std::fs::remove_file(entry.path());
             }
         }
-        let fichier = dossier.join(format!("{id}-{emp}"));
-        ecrire_atomique(&fichier, octets)?;
-        if let Some(e) = self.amis.lock().unwrap().get_mut(&id) {
-            e.avatar = Some(fichier.to_string_lossy().into_owned());
+        let file = dir.join(format!("{id}-{hash}"));
+        write_atomic(&file, bytes)?;
+        if let Some(f) = self.friends.lock().unwrap().get_mut(&id) {
+            f.avatar = Some(file.to_string_lossy().into_owned());
         }
         Ok(())
     }
 
-    /// Recalcule les statuts, écrit etat.json et envoie les notifications.
-    fn publier(&self) -> Result<()> {
-        let invisible = self.ch.est_invisible();
-        let t = maintenant_ms();
-        let mut nouveaux = Vec::new();
-        let liste: Vec<EtatAmi> = {
-            let mut amis = self.amis.lock().unwrap();
-            let mut notifies = self.deja_notifies.lock().unwrap();
-            for (id, e) in amis.iter_mut() {
-                let recent = e.vu_ms.is_some_and(|v| t.saturating_sub(v) < EN_LIGNE_SI_MOINS_DE_MS);
-                e.statut = if invisible {
-                    Statut::HorsLigne
+    /// Recomputes statuses, writes state.json and sends notifications.
+    fn publish(&self) -> Result<()> {
+        let invisible = self.paths.is_invisible();
+        let t = now_ms();
+        let mut came_online = Vec::new();
+        let list: Vec<FriendState> = {
+            let mut friends = self.friends.lock().unwrap();
+            let mut notified = self.notified.lock().unwrap();
+            for (id, f) in friends.iter_mut() {
+                let recent = f.last_seen_ms.is_some_and(|v| t.saturating_sub(v) < ONLINE_IF_SEEN_WITHIN_MS);
+                f.status = if invisible {
+                    Status::Offline
                 } else if recent {
-                    Statut::EnLigne
-                } else if e.en_attente {
-                    Statut::EnAttente
+                    Status::Online
+                } else if f.pending {
+                    Status::Pending
                 } else {
-                    Statut::HorsLigne
+                    Status::Offline
                 };
-                if e.statut == Statut::EnLigne {
-                    if notifies.insert(*id) {
-                        nouveaux.push(e.clone());
+                if f.status == Status::Online {
+                    if notified.insert(*id) {
+                        came_online.push(f.clone());
                     }
                 } else {
-                    notifies.remove(id);
+                    notified.remove(id);
                 }
             }
-            amis.values().cloned().collect()
+            friends.values().cloned().collect()
         };
-        let fichier = FichierEtat {
-            moi: Moi { code: self.moi.to_string(), invisible, maj_ms: t },
-            amis: liste,
+        let file = StateFile {
+            me: Me { code: self.me.to_string(), invisible, updated_ms: t },
+            friends: list,
         };
-        ecrire_atomique(&self.ch.etat(), serde_json::to_string_pretty(&fichier)?.as_bytes())?;
-        for e in nouveaux {
-            notifier(&e);
+        write_atomic(&self.paths.state(), serde_json::to_string_pretty(&file)?.as_bytes())?;
+        for f in came_online {
+            notify(&f);
         }
         Ok(())
     }
 }
 
-fn notifier(e: &EtatAmi) {
-    let corps = match &e.profil {
-        Some(p) => format!("{}@{} · {}", p.nom, p.hote, p.distro),
+fn notify(f: &FriendState) {
+    let body = match &f.profile {
+        Some(p) => format!("{}@{} · {}", p.user, p.host, p.distro),
         None => String::new(),
     };
     let mut cmd = std::process::Command::new("notify-send");
     cmd.args(["-a", "Archmates", "-u", "low"]);
-    if let Some(a) = &e.avatar {
+    if let Some(a) = &f.avatar {
         cmd.args(["-i", a]);
     }
-    cmd.arg(format!("{} est en ligne", e.surnom)).arg(corps);
+    cmd.arg(format!("{} is online", f.nickname)).arg(body);
     let _ = cmd.spawn();
 }
 
-// ── Côté serveur : répondre aux amis qui nous contactent ────────────────────
+// ── Server side: answer friends who contact us ──────────────────────────────
 
 #[derive(Clone)]
-struct Accueil(Arc<Partage>);
+struct Greeter(Arc<Shared>);
 
-impl std::fmt::Debug for Accueil {
+impl std::fmt::Debug for Greeter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Accueil")
+        f.write_str("Greeter")
     }
 }
 
-impl ProtocolHandler for Accueil {
-    async fn accept(&self, connexion: Connection) -> Result<(), AcceptError> {
-        let id = connexion.remote_id();
-        let p = &self.0;
-        // Refus : pas dans notre liste, ou mode invisible.
-        if p.ch.est_invisible() || !p.est_ami(&id) {
-            connexion.close(CODE_PAS_AMI.into(), b"pas ami");
+impl ProtocolHandler for Greeter {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let id = connection.remote_id();
+        let shared = &self.0;
+        // Refuse: not in our list, or invisible mode.
+        if shared.paths.is_invisible() || !shared.is_friend(&id) {
+            connection.close(CODE_NOT_FRIEND.into(), b"not a friend");
             return Ok(());
         }
-        if let Err(err) = servir(p, &connexion, id).await {
-            eprintln!("[entrant {}] {err:#}", court(&id));
+        if let Err(err) = serve(shared, &connection, id).await {
+            eprintln!("[incoming {}] {err:#}", short(&id));
         }
-        let _ = tokio::time::timeout(Duration::from_secs(5), connexion.closed()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), connection.closed()).await;
         Ok(())
     }
 }
 
-async fn servir(p: &Arc<Partage>, connexion: &Connection, id: EndpointId) -> Result<()> {
-    // Un flux par requête, jusqu'à ce que l'ami ferme la connexion.
-    while let Ok((mut envoi, mut reception)) = connexion.accept_bi().await {
-        let octets = reception.read_to_end(JSON_MAX).await?;
-        let requete: Requete = serde_json::from_slice(&octets).context("requête illisible")?;
-        match requete {
-            Requete::Bonjour { profil } => {
-                p.contact(id, profil);
-                let rep = Reponse { profil: Profil::local() };
-                envoi.write_all(&serde_json::to_vec(&rep)?).await?;
-                let _ = p.publier();
+async fn serve(shared: &Arc<Shared>, connection: &Connection, id: EndpointId) -> Result<()> {
+    // One stream per request, until the friend closes the connection.
+    while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+        let bytes = recv.read_to_end(JSON_MAX).await?;
+        let request: Request = serde_json::from_slice(&bytes).context("unreadable request")?;
+        match request {
+            Request::Hello { profile } => {
+                shared.seen(id, profile);
+                let response = Response { profile: Profile::local() };
+                send.write_all(&serde_json::to_vec(&response)?).await?;
+                let _ = shared.publish();
             }
-            Requete::Avatar => {
-                let octets = lire_avatar(&Profil::local().nom).unwrap_or_default();
-                envoi.write_all(&octets).await?;
+            Request::Avatar => {
+                let image = read_avatar(&Profile::local().user).unwrap_or_default();
+                send.write_all(&image).await?;
             }
         }
-        envoi.finish()?;
+        send.finish()?;
     }
     Ok(())
 }
 
-// ── Côté client : contacter un ami ──────────────────────────────────────────
+// ── Client side: contact a friend ───────────────────────────────────────────
 
-async fn saluer(endpoint: &Endpoint, p: &Arc<Partage>, id: EndpointId) -> Result<()> {
-    let connexion = tokio::time::timeout(DELAI_CONNEXION, endpoint.connect(id, ALPN))
+async fn greet(endpoint: &Endpoint, shared: &Arc<Shared>, id: EndpointId) -> Result<()> {
+    let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(id, ALPN))
         .await
-        .map_err(|_| anyhow!("injoignable (délai dépassé)"))??;
+        .map_err(|_| anyhow!("unreachable (timed out)"))??;
 
-    let resultat = echanger(p, &connexion, id).await;
-    if resultat.is_err() && ferme_pour_pas_ami(&connexion) {
-        p.marquer_en_attente(id, true);
-        connexion.close(0u32.into(), b"ok");
-        return Err(anyhow!("ne t'a pas encore ajouté"));
+    let result = exchange(shared, &connection, id).await;
+    if result.is_err() && closed_as_not_friend(&connection) {
+        shared.set_pending(id, true);
+        connection.close(0u32.into(), b"ok");
+        return Err(anyhow!("hasn't added you yet"));
     }
-    connexion.close(0u32.into(), b"ok");
-    resultat
+    connection.close(0u32.into(), b"ok");
+    result
 }
 
-async fn echanger(p: &Arc<Partage>, connexion: &Connection, id: EndpointId) -> Result<()> {
-    let (mut envoi, mut reception) = connexion.open_bi().await?;
-    let req = Requete::Bonjour { profil: Profil::local() };
-    envoi.write_all(&serde_json::to_vec(&req)?).await?;
-    envoi.finish()?;
-    let octets = reception.read_to_end(JSON_MAX).await?;
-    let rep: Reponse = serde_json::from_slice(&octets).context("réponse illisible")?;
+async fn exchange(shared: &Arc<Shared>, connection: &Connection, id: EndpointId) -> Result<()> {
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let request = Request::Hello { profile: Profile::local() };
+    send.write_all(&serde_json::to_vec(&request)?).await?;
+    send.finish()?;
+    let bytes = recv.read_to_end(JSON_MAX).await?;
+    let response: Response = serde_json::from_slice(&bytes).context("unreadable response")?;
 
-    let emp = rep.profil.avatar_empreinte.clone();
-    p.contact(id, rep.profil);
+    let hash = response.profile.avatar_hash.clone();
+    shared.seen(id, response.profile);
 
-    if emp.is_some() && !p.avatar_a_jour(&id, &emp) {
-        let (mut envoi, mut reception) = connexion.open_bi().await?;
-        envoi.write_all(&serde_json::to_vec(&Requete::Avatar)?).await?;
-        envoi.finish()?;
-        let image = reception.read_to_end(AVATAR_MAX).await?;
+    if hash.is_some() && !shared.avatar_up_to_date(&id, &hash) {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(&serde_json::to_vec(&Request::Avatar)?).await?;
+        send.finish()?;
+        let image = recv.read_to_end(AVATAR_MAX).await?;
         if !image.is_empty() {
-            p.enregistrer_avatar(id, &image)?;
+            shared.save_avatar(id, &image)?;
         }
     }
     Ok(())
 }
 
-fn ferme_pour_pas_ami(connexion: &Connection) -> bool {
-    // L'autre côté ferme avec le code 403 quand il ne nous a pas dans sa liste.
-    connexion
+fn closed_as_not_friend(connection: &Connection) -> bool {
+    // The other side closes with code 403 when we are not in its list.
+    connection
         .close_reason()
-        .map(|r| format!("{r:?}").contains(&format!("error_code: {CODE_PAS_AMI}")))
+        .map(|r| format!("{r:?}").contains(&format!("error_code: {CODE_NOT_FRIEND}")))
         .unwrap_or(false)
 }
 
-fn court(id: &EndpointId) -> String {
+fn short(id: &EndpointId) -> String {
     id.to_string().chars().take(8).collect()
 }
 
-// ── Boucle principale ───────────────────────────────────────────────────────
+// ── Main loop ───────────────────────────────────────────────────────────────
 
-pub async fn lancer() -> Result<()> {
-    let ch = Chemins::detecter();
-    let cle = crate::config::charger_ou_creer_cle(&ch)?;
-    let moi = cle.public();
+pub async fn run() -> Result<()> {
+    let paths = Paths::detect();
+    let key = crate::config::load_or_create_key(&paths)?;
+    let me = key.public();
 
-    // Reprend le dernier état connu (photos, « vu il y a… ») après un redémarrage.
+    // Restore the last known state (pictures, "last seen") after a restart.
     let mut initial = BTreeMap::new();
-    if let Ok(txt) = std::fs::read_to_string(ch.etat()) {
-        if let Ok(ancien) = serde_json::from_str::<FichierEtat>(&txt) {
-            for e in ancien.amis {
-                if let Ok(id) = e.code.parse::<EndpointId>() {
-                    initial.insert(id, EtatAmi { en_attente: false, ..e });
+    if let Ok(txt) = std::fs::read_to_string(paths.state()) {
+        if let Ok(old) = serde_json::from_str::<StateFile>(&txt) {
+            for f in old.friends {
+                if let Ok(id) = f.code.parse::<EndpointId>() {
+                    initial.insert(id, FriendState { pending: false, ..f });
                 }
             }
         }
     }
-    let partage = Arc::new(Partage {
-        ch,
-        moi,
-        amis: Mutex::new(initial),
-        deja_notifies: Mutex::new(HashSet::new()),
+    let shared = Arc::new(Shared {
+        paths,
+        me,
+        friends: Mutex::new(initial),
+        notified: Mutex::new(HashSet::new()),
     });
 
     let endpoint = Endpoint::builder(presets::N0)
-        .secret_key(cle)
+        .secret_key(key)
         .bind()
         .await
-        .context("impossible de démarrer le réseau P2P")?;
-    let router = Router::builder(endpoint.clone()).accept(ALPN, Accueil(partage.clone())).spawn();
-    eprintln!("archmates : service démarré, ton code est {moi}");
+        .context("could not start the P2P network")?;
+    let router = Router::builder(endpoint.clone()).accept(ALPN, Greeter(shared.clone())).spawn();
+    eprintln!("archmates: service started, your code is {me}");
     let _ = tokio::time::timeout(Duration::from_secs(15), endpoint.online()).await;
-    eprintln!("archmates : connecté au réseau");
+    eprintln!("archmates: connected to the network");
 
-    let mut horloge = tokio::time::interval(INTERVALLE);
+    let mut ticker = tokio::time::interval(INTERVAL);
     loop {
         tokio::select! {
-            _ = horloge.tick() => {}
+            _ = ticker.tick() => {}
             _ = tokio::signal::ctrl_c() => break,
         }
-        let liste = match partage.recharger_liste() {
+        let list = match shared.reload_list() {
             Ok(l) => l,
             Err(err) => {
-                eprintln!("amis.toml : {err:#}");
+                eprintln!("friends.toml: {err:#}");
                 continue;
             }
         };
-        if !partage.ch.est_invisible() {
-            let mut taches = Vec::new();
-            for (id, ami) in liste {
-                let (ep, p) = (endpoint.clone(), partage.clone());
-                taches.push(tokio::spawn(async move {
-                    match saluer(&ep, &p, id).await {
-                        Ok(()) => {
-                            p.marquer_en_attente(id, false);
-                        }
-                        Err(err) => eprintln!("[{}] {err:#}", ami.surnom),
+        if !shared.paths.is_invisible() {
+            let mut tasks = Vec::new();
+            for (id, friend) in list {
+                let (ep, sh) = (endpoint.clone(), shared.clone());
+                tasks.push(tokio::spawn(async move {
+                    match greet(&ep, &sh, id).await {
+                        Ok(()) => sh.set_pending(id, false),
+                        Err(err) => eprintln!("[{}] {err:#}", friend.nickname),
                     }
                 }));
             }
-            for t in taches {
+            for t in tasks {
                 let _ = t.await;
             }
         }
-        if let Err(err) = partage.publier() {
-            eprintln!("etat.json : {err:#}");
+        if let Err(err) = shared.publish() {
+            eprintln!("state.json: {err:#}");
         }
     }
 

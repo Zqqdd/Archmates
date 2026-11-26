@@ -1,58 +1,57 @@
-//! amis : liste d'amis pair à pair pour CachyOS / Arch.
+//! archmates: peer-to-peer friends list for CachyOS / Arch Linux.
 //!
-//!   archmates code                    affiche ton code d'ami à partager
-//!   archmates add <code> <nickname>   ajoute un ami (il doit t'ajouter aussi)
-//!   archmates remove <nickname|code>  retire un ami
-//!   archmates list                    affiche tes amis et leur statut
-//!   archmates invisible on|off        mode invisible
-//!   archmates profile                 affiche ce que tes amis voient de toi
-//!   archmates daemon                  lance le service (normalement via systemd)
+//!   archmates code                    show your friend code to share
+//!   archmates add <code> <nickname>   add a friend (they must add you too)
+//!   archmates remove <nickname|code>  remove a friend
+//!   archmates list                    show your friends and their status
+//!   archmates invisible on|off        invisible mode
+//!   archmates profile                 show what your friends see of you
+//!   archmates daemon                  run the service (normally via systemd)
 
 mod config;
 mod daemon;
-mod profil;
+mod profile;
 mod proto;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use config::{Chemins, ListeAmis, charger_ou_creer_cle};
+use config::{FriendList, Paths, load_or_create_key};
 
 #[derive(Parser)]
-#[command(name = "archmates", version, about = "Liste d'amis pair à pair : vois qui est en ligne.")]
+#[command(name = "archmates", version, about = "Peer-to-peer friends list: see who is online.")]
 struct Cli {
     #[command(subcommand)]
-    commande: Commande,
+    command: Command,
 }
 
 #[derive(Subcommand)]
-enum Commande {
-    /// Affiche ton code d'ami, à donner à tes amis
+enum Command {
+    /// Show your friend code, to share with your friends
     Code,
-    /// Ajoute un ami à partir de son code
+    /// Add a friend from their code
     Add {
-        /// Le code d'ami reçu
+        /// The friend code you received
         code: String,
-        /// Le surnom affiché pour cet ami
-        #[arg(value_name = "NICKNAME")]
-        surnom: String,
+        /// The nickname shown for this friend
+        nickname: String,
     },
-    /// Retire un ami (par surnom ou par code)
+    /// Remove a friend (by nickname or code)
     Remove {
-        /// Surnom ou code de l'ami
+        /// Friend's nickname or code
         #[arg(value_name = "NICKNAME|CODE")]
-        qui: String,
+        who: String,
     },
-    /// Affiche tes amis et leur statut
+    /// Show your friends and their status
     List,
-    /// Active ou désactive le mode invisible
+    /// Turn invisible mode on or off
     Invisible {
         #[arg(value_enum)]
         state: OnOff,
     },
-    /// Affiche ton profil tel que tes amis le voient
+    /// Show your profile as your friends see it
     Profile,
-    /// Lance le service de présence (au premier plan)
+    /// Run the presence service (in the foreground)
     Daemon,
 }
 
@@ -62,95 +61,92 @@ enum OnOff {
     Off,
 }
 
-fn depuis(ms: u64) -> String {
-    let maintenant = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let s = maintenant.saturating_sub(ms) / 1000;
+fn ago(ms: u64) -> String {
+    let s = daemon::now_ms().saturating_sub(ms) / 1000;
     match s {
-        0..=59 => "à l'instant".into(),
-        60..=3599 => format!("il y a {} min", s / 60),
-        3600..=86_399 => format!("il y a {} h", s / 3600),
-        _ => format!("il y a {} j", s / 86_400),
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{} min ago", s / 60),
+        3600..=86_399 => format!("{} h ago", s / 3600),
+        _ => format!("{} d ago", s / 86_400),
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let ch = Chemins::detecter();
+    let paths = Paths::detect();
 
-    match cli.commande {
-        Commande::Code => {
-            let cle = charger_ou_creer_cle(&ch)?;
-            println!("{}", cle.public());
-            eprintln!("\nDonne ce code à tes amis. Ils l'ajoutent avec :\n  archmates add <code> <nickname>");
+    match cli.command {
+        Command::Code => {
+            let key = load_or_create_key(&paths)?;
+            println!("{}", key.public());
+            eprintln!("\nShare this code with your friends. They add you with:\n  archmates add <code> <nickname>");
         }
-        Commande::Add { code, surnom } => {
-            let mut liste = ListeAmis::charger(&ch)?;
-            liste.ajouter(&code, &surnom)?;
-            liste.enregistrer(&ch)?;
-            println!("✓ {surnom} ajouté.");
-            println!("  Il apparaîtra en ligne quand il t'aura ajouté à son tour (archmates code → envoie-lui ton code).");
+        Command::Add { code, nickname } => {
+            let mut list = FriendList::load(&paths)?;
+            list.add(&code, &nickname)?;
+            list.save(&paths)?;
+            println!("✓ {nickname} added.");
+            println!("  They will show up online once they add you back (run `archmates code` and send them your code).");
         }
-        Commande::Remove { qui } => {
-            let mut liste = ListeAmis::charger(&ch)?;
-            if liste.retirer(&qui) {
-                liste.enregistrer(&ch)?;
-                println!("✓ {qui} retiré.");
+        Command::Remove { who } => {
+            let mut list = FriendList::load(&paths)?;
+            if list.remove(&who) {
+                list.save(&paths)?;
+                println!("✓ {who} removed.");
             } else {
-                println!("Aucun ami « {qui} ».");
+                println!("No friend named \"{who}\".");
             }
         }
-        Commande::List => {
-            let liste = ListeAmis::charger(&ch)?;
-            if liste.amis.is_empty() {
-                println!("Aucun ami pour l'instant. Ajoute-en un avec : archmates add <code> <nickname>");
+        Command::List => {
+            let list = FriendList::load(&paths)?;
+            if list.friends.is_empty() {
+                println!("No friends yet. Add one with: archmates add <code> <nickname>");
                 return Ok(());
             }
-            let etat: Option<daemon::FichierEtat> = std::fs::read_to_string(ch.etat())
+            let state: Option<daemon::StateFile> = std::fs::read_to_string(paths.state())
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok());
-            if etat.is_none() {
-                println!("(le service ne tourne pas : statuts inconnus)\n");
+            if state.is_none() {
+                println!("(the service is not running: status unknown)\n");
             }
-            for ami in &liste.amis {
-                let e = etat.as_ref().and_then(|f| f.amis.iter().find(|e| e.code == ami.code));
-                let (pastille, texte) = match e.map(|e| e.statut) {
-                    Some(daemon::Statut::EnLigne) => ("\x1b[32m●\x1b[0m", "en ligne".to_string()),
-                    Some(daemon::Statut::EnAttente) => ("\x1b[33m●\x1b[0m", "ne t'a pas encore ajouté".to_string()),
+            for friend in &list.friends {
+                let f = state.as_ref().and_then(|s| s.friends.iter().find(|f| f.code == friend.code));
+                let (dot, text) = match f.map(|f| f.status) {
+                    Some(daemon::Status::Online) => ("\x1b[32m●\x1b[0m", "online".to_string()),
+                    Some(daemon::Status::Pending) => ("\x1b[33m●\x1b[0m", "hasn't added you yet".to_string()),
                     _ => (
                         "\x1b[90m●\x1b[0m",
-                        e.and_then(|e| e.vu_ms).map(|v| format!("hors ligne, vu {}", depuis(v))).unwrap_or("hors ligne".into()),
+                        f.and_then(|f| f.last_seen_ms)
+                            .map(|v| format!("offline, last seen {}", ago(v)))
+                            .unwrap_or("offline".into()),
                     ),
                 };
-                let detail = e
-                    .and_then(|e| e.profil.as_ref())
-                    .map(|p| format!("  {}@{} · {} · {}", p.nom, p.hote, p.distro, p.wm))
+                let detail = f
+                    .and_then(|f| f.profile.as_ref())
+                    .map(|p| format!("  {}@{} · {} · {}", p.user, p.host, p.distro, p.wm))
                     .unwrap_or_default();
-                println!("{pastille} {:<16} {texte}{detail}", ami.surnom);
+                println!("{dot} {:<16} {text}{detail}", friend.nickname);
             }
-            if let Some(f) = etat.filter(|f| f.moi.invisible) {
-                let _ = f;
-                println!("\n(tu es en mode invisible)");
+            if state.is_some_and(|s| s.me.invisible) {
+                println!("\n(you are in invisible mode)");
             }
         }
-        Commande::Invisible { state } => match state {
+        Command::Invisible { state } => match state {
             OnOff::On => {
-                std::fs::create_dir_all(&ch.donnees)?;
-                std::fs::write(ch.invisible(), b"")?;
-                println!("✓ Mode invisible activé : tes amis te voient hors ligne.");
+                std::fs::create_dir_all(&paths.data)?;
+                std::fs::write(paths.invisible(), b"")?;
+                println!("✓ Invisible mode on: your friends see you as offline.");
             }
             OnOff::Off => {
-                let _ = std::fs::remove_file(ch.invisible());
-                println!("✓ Mode invisible désactivé.");
+                let _ = std::fs::remove_file(paths.invisible());
+                println!("✓ Invisible mode off.");
             }
         },
-        Commande::Profile => {
-            println!("{}", serde_json::to_string_pretty(&profil::Profil::local())?);
+        Command::Profile => {
+            println!("{}", serde_json::to_string_pretty(&profile::Profile::local())?);
         }
-        Commande::Daemon => daemon::lancer().await?,
+        Command::Daemon => daemon::run().await?,
     }
     Ok(())
 }
