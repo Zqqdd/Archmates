@@ -381,6 +381,7 @@ class FriendWindow(Gtk.Window):
         root.add_css_class("card")
         root.add_css_class("chat-card")
         root.set_size_request(CHAT_W, CHAT_H)
+        self.set_default_size(CHAT_W, CHAT_H)
         self.set_child(root)
 
         self.header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -389,6 +390,10 @@ class FriendWindow(Gtk.Window):
         root.append(Gtk.Separator())
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        # The conversation scrolls inside a fixed-size panel instead of growing the window.
+        self.scroller.set_propagate_natural_height(False)
+        self.scroller.set_propagate_natural_width(False)
+        self.scroller.set_size_request(-1, 200)
         self.scroller.set_child(self.messages)
         root.append(self.scroller)
 
@@ -527,7 +532,9 @@ class FriendWindow(Gtk.Window):
                 if picture is not None:
                     b.append(picture)
                 else:
-                    b.append(Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=36, selectable=True))
+                    msg = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=32, selectable=True)
+                    msg.set_wrap_mode(2)  # Pango.WrapMode.WORD_CHAR: long words wrap too
+                    b.append(msg)
                 b.append(label(ago(m.get("ms", 0)), "time"))
                 self.messages.append(b)
             GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(1e9) or False)
@@ -661,6 +668,21 @@ def on_activate(app):
         custom = Gtk.CssProvider()
         custom.load_from_path(str(user_css))
         Gtk.StyleContext.add_provider_for_display(display, custom, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+    if "--chat-only" in sys.argv:
+        # Only the chat panel (opened from the Noctalia widget); quit when it closes.
+        i = sys.argv.index("--friend") if "--friend" in sys.argv else -1
+        if i < 0 or i + 1 >= len(sys.argv):
+            app.quit()
+            return
+        css = Gtk.CssProvider()
+        probe = Gtk.Window()
+        c = theme_colors(probe)
+        css.load_from_string(f"@define-color bg {c['bg']};\n@define-color fg {c['fg']};\n@define-color accent {c['accent']};\n" + DEFAULT_CSS)
+        Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        win = FriendWindow(app, sys.argv[i + 1])
+        win.connect("close-request", lambda _w: (app.quit(), False)[-1])
+        win.present()
+        return
     Widget(app).present()
     if "--friend" in sys.argv:  # open a friend's window right away (handy from a keybind)
         i = sys.argv.index("--friend")
