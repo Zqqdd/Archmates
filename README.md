@@ -17,8 +17,16 @@ You need Rust (`sudo pacman -S rustup && rustup default stable`), then:
 ./installer.sh
 ```
 
-The script builds the project, installs the `archmates` command to `~/.local/bin`, starts the presence service
-(systemd user unit) and, if you use Noctalia, installs the "Archmates" widget. No password is needed.
+The script does everything, with no password needed:
+
+- builds the project and installs the `archmates` command to `~/.local/bin`;
+- starts the presence service (systemd user unit) at every login;
+- if you use **Noctalia**: installs the "Archmates" widget and places it at the top right of your main screen,
+  without touching your other widgets (move it later with `noctalia msg desktop-widgets-edit`);
+- if you use **Hyprland**: adds a frosted-glass blur rule behind the widget. The rule is only kept if Hyprland
+  accepts it; otherwise your config is restored as it was.
+
+Running the installer again (for an update) keeps your widget where you put it.
 
 ## Usage
 
