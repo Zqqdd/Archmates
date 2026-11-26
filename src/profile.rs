@@ -24,6 +24,9 @@ pub struct Profile {
     /// Fingerprint of the picture: a friend only downloads it again when it changes.
     pub avatar_hash: Option<String>,
     pub version: String,
+    /// RAM and storage usage (absent when the friend turned sharing off, or on older versions).
+    #[serde(default)]
+    pub stats: Option<crate::stats::Stats>,
 }
 
 fn read(p: &str) -> Option<String> {
@@ -229,6 +232,7 @@ impl Profile {
             uptime_s,
             avatar_hash: read_avatar(&user).map(|b| fingerprint(&b)),
             version: env!("CARGO_PKG_VERSION").into(),
+            stats: crate::stats::current(&crate::config::Paths::detect()),
             user,
         }
     }

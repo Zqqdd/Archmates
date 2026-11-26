@@ -77,6 +77,7 @@ window.archmates { background: transparent; }
 .notice { font-size: 11px; color: @accent; }
 .avatar { border-radius: 18px; background-color: alpha(@fg, 0.12); }
 .offline-avatar { opacity: 0.45; }
+.badge { background-color: @accent; color: @bg; border-radius: 8px; padding: 0 6px; font-size: 10px; font-weight: bold; }
 .dot { min-width: 8px; min-height: 8px; border-radius: 4px; }
 .dot.online { background-color: @accent; }
 .dot.pending { background-color: #e6c07b; }
@@ -85,6 +86,16 @@ separator { background-color: alpha(@fg, 0.18); min-height: 1px; }
 button.copy { font-size: 11px; padding: 2px 10px; border-radius: 10px;
   background: alpha(@fg, 0.08); border: none; color: inherit; box-shadow: none; }
 button.copy:hover { background: alpha(@fg, 0.18); }
+window.archmates-chat { background-color: @bg; }
+.chat-card { border-radius: 0; border: none; background-color: alpha(@bg, 0.92); }
+.bubble { padding: 8px 10px; border-radius: 12px; }
+.bubble.mine { background-color: alpha(@accent, 0.25); }
+.bubble.theirs { background-color: alpha(@fg, 0.10); }
+.time { font-size: 9px; opacity: 0.6; }
+.friend-row:hover { background-color: alpha(@fg, 0.06); border-radius: 10px; }
+entry { background: alpha(@fg, 0.08); color: @fg; border: none; border-radius: 10px; }
+levelbar block.filled { background-color: @accent; }
+levelbar block.empty { background-color: alpha(@fg, 0.15); }
 """
 FALLBACK = {"bg": "#141418", "fg": "#ece6e1", "accent": "#f0a868"}
 WAL_COLORS = HOME / ".cache" / "wal" / "colors.json"
@@ -226,6 +237,11 @@ def friend_row(friend):
         subtitle = f"last seen {ago(seen)}" if seen else "never seen"
 
     row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+    row.add_css_class("friend-row")
+    click = Gtk.GestureClick()
+    click.connect("released", lambda *_a: open_friend(friend.get("code")))
+    row.add_controller(click)
+    row.set_cursor_from_name("pointer")
     row.append(avatar(friend))
     col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True, valign=Gtk.Align.CENTER)
     top = Gtk.Box(spacing=6)
@@ -234,6 +250,9 @@ def friend_row(friend):
     dot.add_css_class(status)
     top.append(dot)
     top.append(label(friend.get("nickname", "?"), "nickname"))
+    if friend.get("unread"):
+        badge = label(str(friend["unread"]), "badge")
+        top.append(badge)
     col.append(top)
     col.append(label(subtitle, "subtitle"))
     row.append(col)
@@ -244,6 +263,162 @@ def friend_row(friend):
             f"up {duration(profile.get('uptime_s', 0))}"
         )
     return row
+
+
+ARCHMATES = shutil.which("archmates") or str(HOME / ".local" / "bin" / "archmates")
+
+
+def gb(n):
+    return f"{(n or 0) / 1073741824:.1f}"
+
+
+def stat_bar(name, used, total):
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+    top = Gtk.Box(spacing=6)
+    top.append(label(name, "subtitle"))
+    value = label(f"{gb(used)} / {gb(total)} GB", "subtitle")
+    value.set_hexpand(True)
+    top.append(value)
+    pct = used / total if total else 0
+    top.append(label(f"{round(pct * 100)}%", "nickname", xalign=1.0))
+    box.append(top)
+    level = Gtk.LevelBar(min_value=0, max_value=1, value=min(pct, 1))
+    box.append(level)
+    return box
+
+
+class FriendWindow(Gtk.Window):
+    """Opens when you click a friend: profile, RAM / storage, conversation, messages and files."""
+
+    def __init__(self, app, code):
+        super().__init__(application=app, title="Archmates")
+        self.code = code
+        self.add_css_class("archmates-chat")
+        self.set_default_size(400, 560)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        root.add_css_class("card")
+        root.add_css_class("chat-card")
+        self.set_child(root)
+
+        self.header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        root.append(self.header)
+        root.append(Gtk.Separator())
+        self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.scroller.set_child(self.messages)
+        root.append(self.scroller)
+
+        bottom = Gtk.Box(spacing=6)
+        attach = Gtk.Button(icon_name="mail-attachment-symbolic", tooltip_text="Send a file")
+        attach.add_css_class("copy")
+        attach.connect("clicked", lambda _b: self.pick_file())
+        bottom.append(attach)
+        self.entry = Gtk.Entry(hexpand=True, placeholder_text="Message…")
+        self.entry.connect("activate", lambda _e: self.send_message())
+        bottom.append(self.entry)
+        send = Gtk.Button(icon_name="mail-send-symbolic")
+        send.add_css_class("copy")
+        send.connect("clicked", lambda _b: self.send_message())
+        bottom.append(send)
+        root.append(bottom)
+        self.status = label("", "subtitle")
+        root.append(self.status)
+
+        self.last_count = -1
+        self.refresh()
+        GLib.timeout_add_seconds(3, self.refresh)
+
+    def friend(self):
+        for f in (load_state() or {}).get("friends", []):
+            if f.get("code") == self.code:
+                return f
+        return None
+
+    def run(self, args):
+        self.status.set_text("…")
+
+        def worker():
+            r = subprocess.run([ARCHMATES, *args], capture_output=True, text=True)
+            out = (r.stdout if r.returncode == 0 else (r.stderr or r.stdout)).strip()
+            text = out.removeprefix("✓ ") if r.returncode == 0 else "Error: " + out.removeprefix("Error: ")
+            GLib.idle_add(lambda: (self.status.set_text(text.splitlines()[-1] if text else ""), self.refresh(), False)[-1])
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def send_message(self):
+        text = self.entry.get_text().strip()
+        if text:
+            self.entry.set_text("")
+            self.run(["send", self.code, text])
+
+    def pick_file(self):
+        dialog = Gtk.FileDialog(title="Send a file")
+
+        def done(dlg, result):
+            try:
+                file = dlg.open_finish(result)
+            except GLib.Error:
+                return
+            if file and file.get_path():
+                self.run(["send-file", self.code, file.get_path()])
+
+        dialog.open(self, None, done)
+
+    def refresh(self):
+        f = self.friend()
+        while (child := self.header.get_first_child()) is not None:
+            self.header.remove(child)
+        if f is None:
+            self.header.append(label("Friend not found.", "warning"))
+            return True
+        p = f.get("profile") or {}
+        self.set_title(f"Archmates — {f.get('nickname')}")
+        top = Gtk.Box(spacing=12)
+        pic = avatar(f)
+        top.append(pic)
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.CENTER)
+        col.append(label(f.get("nickname", "?"), "title"))
+        if p:
+            col.append(label(f"{p['user']}@{p['host']} · {p['distro']}", "subtitle"))
+        status = f.get("status")
+        col.append(label("online" if status == "online" else "hasn't added you yet" if status == "pending"
+                         else f"last seen {ago(f['last_seen_ms'])}" if f.get("last_seen_ms") else "offline", "subtitle"))
+        top.append(col)
+        self.header.append(top)
+        stats = p.get("stats")
+        if stats:
+            bars = Gtk.Box(spacing=14)
+            bars.append(stat_bar("RAM", stats["ram_used"], stats["ram_total"]))
+            bars.append(stat_bar("Disk", stats["disk_used"], stats["disk_total"]))
+            self.header.append(bars)
+        else:
+            self.header.append(label("RAM and storage not shared", "subtitle"))
+
+        r = subprocess.run([ARCHMATES, "chat", self.code, "--json", "-n", "40"], capture_output=True, text=True)
+        try:
+            messages = json.loads(r.stdout) if r.returncode == 0 else []
+        except ValueError:
+            messages = []
+        if len(messages) != self.last_count or any(not m.get("delivered") for m in messages):
+            self.last_count = len(messages)
+            while (child := self.messages.get_first_child()) is not None:
+                self.messages.remove(child)
+            if not messages:
+                self.messages.append(label("No messages yet. Say hi!", "subtitle"))
+            for m in messages:
+                mine = m.get("dir") == "out"
+                b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                            halign=Gtk.Align.END if mine else Gtk.Align.START)
+                b.add_css_class("bubble")
+                b.add_css_class("mine" if mine else "theirs")
+                text = m.get("text", "") + ("  ⏳" if mine and not m.get("delivered") else "")
+                t = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=36, selectable=True)
+                b.append(t)
+                b.append(label(ago(m.get("ms", 0)), "time"))
+                self.messages.append(b)
+            GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(1e9) or False)
+        return True
 
 
 def copy_to_clipboard(text):
@@ -343,7 +518,21 @@ class Widget(Gtk.ApplicationWindow):
         return True
 
 
+APP = None
+OPEN_WINDOWS = {}
+
+
+def open_friend(code):
+    win = OPEN_WINDOWS.get(code)
+    if win is None or not win.get_visible():
+        win = FriendWindow(APP, code)
+        OPEN_WINDOWS[code] = win
+    win.present()
+
+
 def on_activate(app):
+    global APP
+    APP = app
     display = Gdk.Display.get_default()
     user_css = CONFIG_DIR / "widget.css"
     if user_css.exists():
@@ -351,9 +540,39 @@ def on_activate(app):
         custom.load_from_path(str(user_css))
         Gtk.StyleContext.add_provider_for_display(display, custom, Gtk.STYLE_PROVIDER_PRIORITY_USER)
     Widget(app).present()
+    if "--friend" in sys.argv:  # open a friend's window right away (handy from a keybind)
+        i = sys.argv.index("--friend")
+        if i + 1 < len(sys.argv):
+            open_friend(sys.argv[i + 1])
+
+
+def pick_file():
+    """`archmates-widget --pick-file`: shows a file chooser and prints the chosen path."""
+    app = Gtk.Application(application_id="io.github.zqqdd.archmates.picker")
+
+    def activate(a):
+        win = Gtk.Window(application=a)
+        dialog = Gtk.FileDialog(title="Send a file")
+
+        def done(dlg, result):
+            try:
+                file = dlg.open_finish(result)
+                if file and file.get_path():
+                    print(file.get_path(), flush=True)
+            except GLib.Error:
+                pass
+            a.quit()
+
+        dialog.open(win, None, done)
+
+    app.connect("activate", activate)
+    app.run([])
 
 
 def main():
+    if "--pick-file" in sys.argv:
+        pick_file()
+        return
     if not LayerShell.is_supported():
         sys.exit("archmates-widget: this desktop does not support the layer-shell protocol (GNOME?).")
     app = Gtk.Application(application_id="io.github.zqqdd.archmates.widget")

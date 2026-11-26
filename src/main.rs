@@ -6,12 +6,20 @@
 //!   archmates list                    show your friends and their status
 //!   archmates invisible on|off        invisible mode
 //!   archmates profile                 show what your friends see of you
+//!   archmates send <friend> <text>    send a message (delivered when they are online)
+//!   archmates send-file <friend> <f>  send a file (your friend must be online)
+//!   archmates chat <friend>           show the conversation
+//!   archmates stats on|off            share your RAM and storage usage with friends
 //!   archmates avatar [<image>]        show or set your profile picture
 //!   archmates widget auto|on|off      universal desktop widget (auto = when Noctalia is absent)
 //!   archmates update [--install]      check for a new version (and install it)
 //!   archmates daemon                  run the service (normally via systemd)
 
+mod chat;
 mod config;
+mod ipc;
+mod stats;
+mod transfer;
 mod daemon;
 mod profile;
 mod proto;
@@ -56,6 +64,36 @@ enum Command {
     },
     /// Show your profile as your friends see it
     Profile,
+    /// Send a message to a friend (delivered as soon as they are online)
+    Send {
+        #[arg(value_name = "NICKNAME|CODE")]
+        to: String,
+        /// The message (quotes are optional)
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Send a file to a friend (they must be online)
+    SendFile {
+        #[arg(value_name = "NICKNAME|CODE")]
+        to: String,
+        file: std::path::PathBuf,
+    },
+    /// Show the conversation with a friend (and mark it as read)
+    Chat {
+        #[arg(value_name = "NICKNAME|CODE")]
+        with: String,
+        /// Number of messages to show
+        #[arg(short = 'n', long, default_value_t = 20)]
+        count: usize,
+        /// Print as JSON (used by the widgets)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Share your RAM and storage usage with your friends (on by default)
+    Stats {
+        #[arg(value_enum)]
+        state: OnOff,
+    },
     /// Show or set your profile picture (default: your system account picture)
     Avatar {
         /// Image file to use; without it, shows the current picture
@@ -176,6 +214,42 @@ async fn main() -> Result<()> {
         },
         Command::Profile => {
             println!("{}", serde_json::to_string_pretty(&profile::Profile::local())?);
+        }
+        Command::Send { to, text } => {
+            let answer = ipc::request(&ipc::Command::SendMessage { to, text: text.join(" ") }).await?;
+            println!("✓ {}", answer.message);
+        }
+        Command::SendFile { to, file } => {
+            let path = std::fs::canonicalize(&file)
+                .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))?;
+            println!("→ Sending {}…", path.display());
+            let answer = ipc::request(&ipc::Command::SendFile { to, path: path.to_string_lossy().into_owned() }).await?;
+            println!("✓ {}", answer.message);
+        }
+        Command::Chat { with, count, json } => {
+            let list = FriendList::load(&paths)?;
+            let Some(friend) = list.friends.iter().find(|f| f.nickname == with || f.code == with) else {
+                anyhow::bail!("no friend named \"{with}\"");
+            };
+            let messages = chat::load(&paths, &friend.code);
+            let start = messages.len().saturating_sub(count);
+            chat::mark_read(&paths, &friend.code)?;
+            if json {
+                println!("{}", serde_json::to_string(&messages[start..])?);
+            } else if messages.is_empty() {
+                println!("No messages with {} yet. Write one: archmates send {} <text>", friend.nickname, friend.nickname);
+            } else {
+                for m in &messages[start..] {
+                    let who = if m.dir == "out" { "you" } else { friend.nickname.as_str() };
+                    let state = if m.dir == "out" && !m.delivered { "  (waiting)" } else { "" };
+                    println!("\x1b[90m{}\x1b[0m {who}: {}{state}", ago(m.ms), m.text);
+                }
+            }
+        }
+        Command::Stats { state } => {
+            let on = matches!(state, OnOff::On);
+            stats::set_sharing(&paths, on)?;
+            println!("✓ RAM and storage sharing {}.", if on { "on" } else { "off" });
         }
         Command::Avatar { image, remove } => {
             if remove {

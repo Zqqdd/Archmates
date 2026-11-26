@@ -52,11 +52,27 @@ archmates list                     # who is online
 archmates remove <nickname>        # remove a friend
 archmates invisible on|off         # invisible mode
 archmates profile                  # what your friends see of you
+archmates send <nickname> <text>   # send a message (delivered when they are online)
+archmates send-file <nickname> <f> # send a file (they must be online)
+archmates chat <nickname>          # show the conversation
+archmates stats on|off             # share your RAM and storage usage (on by default)
 archmates avatar [<image>]         # show or set your profile picture
 archmates update [--install]       # check for a new version (and install it)
 ```
 
 To place the widget on your desktop: `noctalia msg desktop-widgets-edit`.
+
+### Messages, files and stats
+
+Click a friend in the widget (Noctalia or universal) to open their panel: their profile, their RAM and storage
+usage, your conversation, a message field and a "send a file" button.
+
+- **Messages** go directly from PC to PC, encrypted. A message written while your friend is offline waits on
+  your machine and is delivered as soon as they come back. Conversations are stored locally in
+  `~/.local/share/archmates/chat/`.
+- **Files** (up to 4 GB) are sent directly too, while your friend is online. Received files land in
+  `~/Downloads/Archmates/<friend>/` (your XDG download folder) and you get a notification.
+- **RAM and storage** usage is shared with your friends only. Turn it off with `archmates stats off`.
 
 ### Profile picture
 
@@ -209,6 +225,11 @@ traffic goes through a public Iroh relay, which only ever sees encrypted data.
 | `src/profile.rs` | builds your profile (distro, kernel, picture…) |
 | `src/proto.rs` | the format of the messages exchanged between machines |
 | `src/daemon.rs` | the service: listens, contacts friends, writes the state, notifications |
+| `src/chat.rs` | conversations and the offline message queue |
+| `src/transfer.rs` | file transfers (own protocol, `archmates/file/1`) |
+| `src/ipc.rs` | local socket used by the CLI and widgets to reach the service |
+| `src/stats.rs` | RAM and storage usage |
+| `noctalia/archmates/friend.luau` | the Noctalia friend panel |
 | `src/widget.rs` | starts and stops the universal widget |
 | `src/update.rs` | checks GitHub for new releases |
 | `noctalia/archmates/` | the Noctalia desktop widget (Luau) |

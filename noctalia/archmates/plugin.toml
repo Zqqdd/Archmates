@@ -13,3 +13,12 @@ description = "Your CachyOS/Arch friends, peer to peer: who is online."
 [[desktop_widget]]
 id = "friends"
 entry = "friends.luau"
+
+# Opens when you click a friend in the widget: profile, RAM / storage, chat, files.
+[[panel]]
+id = "friend"
+entry = "friend.luau"
+width = 400
+height = 560
+placement = "floating"
+position = "center"

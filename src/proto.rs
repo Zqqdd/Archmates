@@ -24,6 +24,8 @@ pub enum Request {
     Hello { profile: Profile },
     /// "Send me your profile picture." Response: the raw image bytes.
     Avatar,
+    /// A chat message. Response: `ok`.
+    Message { id: String, text: String, ms: u64 },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

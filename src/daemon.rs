@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{Friend, FriendList, Paths, write_atomic};
 use crate::profile::{AVATAR_MAX, Profile, fingerprint, read_avatar};
+use crate::chat;
 use crate::proto::{ALPN, CODE_NOT_FRIEND, JSON_MAX, Request, Response};
+use crate::transfer::{FILE_ALPN, FileReceiver};
 use crate::update;
 
 const INTERVAL: Duration = Duration::from_secs(30);
@@ -52,6 +54,9 @@ pub struct FriendState {
     pub avatar: Option<String>,
     #[serde(default)]
     pub pending: bool,
+    /// Messages received since you last opened the conversation.
+    #[serde(default)]
+    pub unread: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +99,7 @@ impl Shared {
                 profile: None,
                 avatar: None,
                 pending: false,
+                unread: 0,
             });
             entry.nickname = f.nickname.clone();
         }
@@ -155,6 +161,7 @@ impl Shared {
             let mut friends = self.friends.lock().unwrap();
             let mut notified = self.notified.lock().unwrap();
             for (id, f) in friends.iter_mut() {
+                f.unread = chat::unread(&self.paths, &f.code);
                 let recent = f.last_seen_ms.is_some_and(|v| t.saturating_sub(v) < ONLINE_IF_SEEN_WITHIN_MS);
                 f.status = if invisible {
                     Status::Offline
@@ -251,6 +258,17 @@ async fn serve(shared: &Arc<Shared>, connection: &Connection, id: EndpointId) ->
                 let image = read_avatar(&Profile::local().user).unwrap_or_default();
                 send.write_all(&image).await?;
             }
+            Request::Message { id: msg_id, text, ms } => {
+                let text: String = text.chars().take(chat::MESSAGE_MAX).collect();
+                let code = id.to_string();
+                let message = chat::Message { id: msg_id, dir: "in".into(), text: text.clone(), ms, delivered: true, file: None };
+                if chat::receive(&shared.paths, &code, message)? {
+                    let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
+                    notify_message(&nickname, &text);
+                }
+                send.write_all(b"ok").await?;
+                let _ = shared.publish();
+            }
         }
         send.finish()?;
     }
@@ -294,7 +312,85 @@ async fn exchange(shared: &Arc<Shared>, connection: &Connection, id: EndpointId)
             shared.save_avatar(id, &image)?;
         }
     }
+
+    // Deliver messages written while the friend was offline.
+    let code = id.to_string();
+    for m in chat::pending(&shared.paths, &code) {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        let request = Request::Message { id: m.id.clone(), text: m.text.clone(), ms: m.ms };
+        send.write_all(&serde_json::to_vec(&request)?).await?;
+        send.finish()?;
+        if recv.read_to_end(16).await? == b"ok" {
+            chat::mark_delivered(&shared.paths, &code, &m.id)?;
+        } else {
+            break;
+        }
+    }
     Ok(())
+}
+
+fn notify_message(nickname: &str, text: &str) {
+    let preview: String = text.chars().take(120).collect();
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "Archmates", "-u", "normal"])
+        .arg(format!("{nickname}"))
+        .arg(preview)
+        .spawn();
+}
+
+/// Friend id and code from a nickname or a code.
+fn resolve(shared: &Shared, who: &str) -> Option<(EndpointId, String, String)> {
+    FriendList::load(&shared.paths).ok()?.by_id().into_iter().find_map(|(id, f)| {
+        (f.nickname == who || f.code == who).then(|| (id, f.code.clone(), f.nickname.clone()))
+    })
+}
+
+/// Requests from the `archmates` command and the widgets (see ipc.rs).
+async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate::ipc::Command) -> crate::ipc::Answer {
+    use crate::ipc::{Answer, Command};
+    let fail = |message: String| Answer { ok: false, message };
+    match command {
+        Command::SendMessage { to, text } => {
+            let Some((id, code, nickname)) = resolve(&shared, &to) else {
+                return fail(format!("no friend named \"{to}\""));
+            };
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return fail("empty message".into());
+            }
+            if text.chars().count() > chat::MESSAGE_MAX {
+                return fail(format!("messages are limited to {} characters", chat::MESSAGE_MAX));
+            }
+            let message = chat::Message { id: chat::new_id(), dir: "out".into(), text, ms: now_ms(), delivered: false, file: None };
+            if let Err(err) = chat::append(&shared.paths, &code, &message) {
+                return fail(format!("{err:#}"));
+            }
+            let _ = greet(&endpoint, &shared, id).await;
+            let _ = shared.publish();
+            if chat::pending(&shared.paths, &code).is_empty() {
+                Answer { ok: true, message: format!("sent to {nickname}") }
+            } else {
+                Answer { ok: true, message: format!("{nickname} is offline: the message will be sent when they come back") }
+            }
+        }
+        Command::SendFile { to, path } => {
+            let Some((id, code, nickname)) = resolve(&shared, &to) else {
+                return fail(format!("no friend named \"{to}\""));
+            };
+            match crate::transfer::send(&endpoint, id, std::path::Path::new(&path)).await {
+                Ok(name) => {
+                    let message = chat::Message {
+                        id: chat::new_id(), dir: "out".into(), text: format!("📎 {name}"),
+                        ms: now_ms(), delivered: true, file: Some(name.clone()),
+                    };
+                    let _ = chat::append(&shared.paths, &code, &message);
+                    let _ = shared.publish();
+                    Answer { ok: true, message: format!("{name} sent to {nickname}") }
+                }
+                Err(err) => fail(format!("{err:#}")),
+            }
+        }
+    }
 }
 
 fn closed_as_not_friend(connection: &Connection) -> bool {
@@ -377,7 +473,37 @@ pub async fn run() -> Result<()> {
         .bind()
         .await
         .context("could not start the P2P network")?;
-    let router = Router::builder(endpoint.clone()).accept(ALPN, Greeter(shared.clone())).spawn();
+    let on_file = {
+        let shared = shared.clone();
+        FileReceiver(Arc::new(move |id: EndpointId, name: String, saved: std::path::PathBuf| {
+            let code = id.to_string();
+            let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
+            let message = chat::Message {
+                id: chat::new_id(), dir: "in".into(), text: format!("📎 {name}"),
+                ms: now_ms(), delivered: true, file: Some(saved.to_string_lossy().into_owned()),
+            };
+            let _ = chat::append(&shared.paths, &code, &message);
+            let _ = std::process::Command::new("notify-send")
+                .args(["-a", "Archmates", "-u", "normal"])
+                .arg(format!("{nickname} sent you a file"))
+                .arg(format!("{name}\nSaved in {}", saved.parent().map(|p| p.display().to_string()).unwrap_or_default()))
+                .spawn();
+            let _ = shared.publish();
+        }))
+    };
+    let router = Router::builder(endpoint.clone())
+        .accept(ALPN, Greeter(shared.clone()))
+        .accept(FILE_ALPN, on_file)
+        .spawn();
+    {
+        let (endpoint, shared) = (endpoint.clone(), shared.clone());
+        tokio::spawn(async move {
+            let result = crate::ipc::serve(move |cmd| handle_command(endpoint.clone(), shared.clone(), cmd)).await;
+            if let Err(err) = result {
+                eprintln!("control socket: {err:#}");
+            }
+        });
+    }
     eprintln!("archmates: service started, your code is {me}");
     let _ = tokio::time::timeout(Duration::from_secs(15), endpoint.online()).await;
     eprintln!("archmates: connected to the network");

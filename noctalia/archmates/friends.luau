@@ -64,12 +64,19 @@ local function friendRow(f)
     tooltip = string.format("%s@%s\n%s · kernel %s\n%s · %s · %s\nup %s",
       p.user, p.host, p.distro, p.kernel, p.wm, p.terminal, p.shell, duration(p.uptime_s or 0))
   end
-  return ui.row({ key = f.code, gap = 10, align = "center", tooltip = tooltip }, {
+  local unread = f.unread or 0
+  return ui.row({ key = f.code, gap = 10, align = "center", tooltip = tooltip, onClick = function()
+    noctalia.state.set("selected", f.code)
+    noctalia.togglePanel("archmates/archmates:friend")
+  end }, {
     avatar(f),
     ui.column({ gap = 1, flexGrow = 1 }, {
       ui.row({ gap = 6, align = "center" }, {
         ui.box({ width = 8, height = 8, radius = 4, fill = color }),
         ui.label({ text = f.nickname, fontWeight = "semibold", color = "on_surface", maxLines = 1 }),
+        ui.row({ visible = unread > 0, paddingH = 6, radius = 8, fill = "primary", align = "center" }, {
+          ui.label({ text = tostring(unread), fontSize = 10, fontWeight = "bold", color = "on_primary" }),
+        }),
       }),
       ui.label({ text = subtitle, fontSize = 11, color = "on_surface_variant", maxLines = 1, maxWidth = 230 }),
     }),
