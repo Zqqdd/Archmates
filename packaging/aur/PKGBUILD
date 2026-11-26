@@ -1,6 +1,6 @@
 # Maintainer: Zqqdd
 pkgname=archmates-bin
-pkgver=0.2.2
+pkgver=0.2.3
 pkgrel=1
 pkgdesc="Peer-to-peer friends list for Arch Linux: see when your friends are online"
 arch=('x86_64')
@@ -16,7 +16,7 @@ provides=('archmates')
 conflicts=('archmates')
 install=archmates.install
 source=("$url/releases/download/v$pkgver/archmates-$pkgver-x86_64-linux.tar.gz")
-sha256sums=('f4ea7815802e31fe175010c46c41f5278ccee0eebb38c239be551d6b6a55bdc9')
+sha256sums=('SKIP')
 
 package() {
   cd "archmates-$pkgver-x86_64-linux"
