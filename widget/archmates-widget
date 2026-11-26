@@ -437,18 +437,20 @@ class FriendWindow(Gtk.Window):
             self.run(["send", self.code, text])
 
     def pick_file(self):
-        dialog = Gtk.FileDialog(title="Send a file")
+        # The chooser runs in its own process: a file dialog attached to a layer-shell panel can
+        # crash GTK, and must never take the widget down with it.
+        import threading
 
-        def done(dlg, result):
-            try:
-                file = dlg.open_finish(result)
-            except GLib.Error:
-                return
-            if file and file.get_path():
-                self.status.set_text(f"Waiting for your friend to accept {os.path.basename(file.get_path())}…")
-                self.run(["send-file", self.code, file.get_path()])
+        def worker():
+            r = subprocess.run([sys.executable, os.path.abspath(__file__), "--pick-file"],
+                               capture_output=True, text=True)
+            path = r.stdout.strip()
+            if path:
+                GLib.idle_add(lambda: (self.status.set_text(
+                    f"Waiting for your friend to accept {os.path.basename(path)}…"),
+                    self.run(["send-file", self.code, path]), False)[-1])
 
-        dialog.open(self, None, done)
+        threading.Thread(target=worker, daemon=True).start()
 
     def offer_card(self, f, o):
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -668,7 +670,9 @@ def on_activate(app):
 
 def pick_file():
     """`archmates-widget --pick-file`: shows a file chooser and prints the chosen path."""
-    app = Gtk.Application(application_id="io.github.zqqdd.archmates.picker")
+    from gi.repository import Gio
+    app = Gtk.Application(application_id="io.github.zqqdd.archmates.picker",
+                          flags=Gio.ApplicationFlags.NON_UNIQUE)
 
     def activate(a):
         win = Gtk.Window(application=a)
@@ -695,7 +699,10 @@ def main():
         return
     if not LayerShell.is_supported():
         sys.exit("archmates-widget: this desktop does not support the layer-shell protocol (GNOME?).")
-    app = Gtk.Application(application_id="io.github.zqqdd.archmates.widget")
+    # NON_UNIQUE: a new widget must start even while an old one (e.g. before an update) is exiting.
+    from gi.repository import Gio
+    app = Gtk.Application(application_id="io.github.zqqdd.archmates.widget",
+                          flags=Gio.ApplicationFlags.NON_UNIQUE)
     app.connect("activate", on_activate)
     app.run([])
 

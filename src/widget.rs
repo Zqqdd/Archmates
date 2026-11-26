@@ -101,8 +101,8 @@ pub async fn supervise(paths: Paths) {
             if let Ok(Some(status)) = c.try_wait() {
                 child = None;
                 if started_at.elapsed() < Duration::from_secs(10) {
-                    eprintln!("widget: exited right away ({status}); retrying in 5 min");
-                    retry_after = Instant::now() + Duration::from_secs(300);
+                    eprintln!("widget: exited right away ({status}); retrying in 15 s");
+                    retry_after = Instant::now() + Duration::from_secs(15);
                 }
             }
         }
@@ -119,7 +119,7 @@ pub async fn supervise(paths: Paths) {
                         }
                         Err(err) => {
                             eprintln!("widget: could not start {}: {err}", prog.display());
-                            retry_after = Instant::now() + Duration::from_secs(300);
+                            retry_after = Instant::now() + Duration::from_secs(15);
                         }
                     }
                 }
