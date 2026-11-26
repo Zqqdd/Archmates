@@ -42,3 +42,16 @@ jobs:
           key: cargo-windows-${{ hashFiles('Cargo.lock') }}
       - run: cargo build --locked --release --features app
       - run: cargo test --locked --release
+      # Test build to try before a release: Actions → this run → Artifacts → "winmates-test".
+      - name: Package Winmates (test build)
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          NAME="winmates-$VERSION-x86_64-windows"
+          mkdir -p "dist/$NAME"
+          cp target/release/winmates.exe target/release/archmates.exe README.md LICENSE "dist/$NAME/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winmates-test
+          path: dist/
+          retention-days: 14
