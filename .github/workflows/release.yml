@@ -19,6 +19,12 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: cargo build --locked --release --features app
+      # WinmatesSetup.exe embeds the three programs built just above.
+      - name: Build WinmatesSetup.exe
+        shell: pwsh
+        run: |
+          $env:WINMATES_PAYLOAD = "$PWD\target\release"
+          cargo build --locked --release --features setup --bin winmates-setup
       - run: cargo test --locked --release
       - name: Package Winmates
         shell: bash
@@ -26,15 +32,19 @@ jobs:
           VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           NAME="winmates-$VERSION-x86_64-windows"
           mkdir -p "dist/$NAME"
-          cp target/release/winmates.exe target/release/archmates.exe README.md LICENSE "dist/$NAME/"
+          cp target/release/winmates.exe target/release/winmates-updater.exe target/release/archmates.exe README.md LICENSE "dist/$NAME/"
+          cp target/release/winmates-setup.exe "dist/WinmatesSetup-$VERSION.exe"
           cd dist
+          # The zip is what WinmatesUpdater downloads; the setup is what people download.
           7z a -tzip "$NAME.zip" "$NAME" > /dev/null
           sha256sum "$NAME.zip" > "$NAME.zip.sha256"
+          sha256sum "WinmatesSetup-$VERSION.exe" > "WinmatesSetup-$VERSION.exe.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: winmates
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.sha256
 
   release:
@@ -52,6 +62,8 @@ jobs:
             exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Audio headers (voice messages)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo build --locked --release
       - run: cargo test --locked --release
       - name: Package
@@ -70,5 +82,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/*.sha256 \
+          gh release create "$GITHUB_REF_NAME" dist/WinmatesSetup-*.exe dist/*.zip dist/*.tar.gz dist/*.sha256 \
             --title "archmates $GITHUB_REF_NAME" --generate-notes

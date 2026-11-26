@@ -1,6 +1,6 @@
 [package]
 name = "archmates"
-version = "0.4.0"
+version = "0.4.2"
 edition = "2024"
 default-run = "archmates"
 
@@ -19,8 +19,25 @@ name = "winmates"
 path = "src/bin/winmates.rs"
 required-features = ["app"]
 
+# Background updater for Winmates: installed in AppData, started at every login.
+[[bin]]
+name = "winmates-updater"
+path = "src/bin/winmates-updater.rs"
+required-features = ["app"]
+
+# WinmatesSetup.exe: the installer, with the programs embedded
+# (build them first, then: WINMATES_PAYLOAD=target/release cargo build --release --features setup).
+[[bin]]
+name = "winmates-setup"
+path = "src/bin/winmates-setup.rs"
+required-features = ["setup"]
+
 [features]
-app = ["dep:eframe", "dep:rfd"]
+default = ["voice"]
+app = ["dep:eframe", "dep:rfd", "dep:window-vibrancy", "dep:raw-window-handle"]
+setup = ["dep:eframe", "dep:window-vibrancy", "dep:raw-window-handle"]
+# Voice messages (microphone and speakers through cpal).
+voice = ["dep:cpal"]
 
 [dependencies]
 anyhow = "1.0.105"
@@ -34,8 +51,10 @@ sha2 = "0.10"
 tokio = { version = "1.54.1", features = ["full"] }
 toml = "1.2.3"
 getrandom = "0.4"
-eframe = { version = "0.33", optional = true }
+eframe = { version = "0.33", optional = true, features = ["persistence"] }
 rfd = { version = "0.15", optional = true }
+cpal = { version = "0.16", optional = true }
+hound = "3.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -43,6 +62,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_Storage_FileSystem",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
 ] }
+raw-window-handle = { version = "0.6", optional = true }
 tauri-winrt-notification = "0.7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+window-vibrancy = { version = "0.6", optional = true }

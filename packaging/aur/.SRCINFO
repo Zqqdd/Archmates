@@ -8,6 +8,7 @@ pkgbase = archmates-bin
 	license = MIT
 	depends = glibc
 	depends = gcc-libs
+	depends = alsa-lib
 	optdepends = noctalia: Noctalia desktop widget
 	optdepends = gtk4-layer-shell: universal desktop widget (without Noctalia)
 	optdepends = python-gobject: universal desktop widget (without Noctalia)

@@ -16,6 +16,8 @@ pub enum Command {
     SendMessage { to: String, text: String },
     SendFile { to: String, path: String },
     AnswerFile { id: String, accept: bool },
+    /// Sends a recorded voice message (a WAV file, up to 5 minutes) to a friend who is online.
+    SendVoice { to: String, path: String },
     /// "Are you running?" Answer: ok, with the service version as message.
     Ping,
     /// Stops the service (used by Winmates to restart it after an update, or to quit).

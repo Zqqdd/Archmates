@@ -16,18 +16,18 @@ directly over encrypted connections, powered by [Iroh](https://iroh.computer).
 
 ### Windows (Winmates)
 
-1. Download `winmates-<version>-x86_64-windows.zip` from the
-   [releases page](https://github.com/Zqqdd/Archmates/releases/latest) and unzip it.
-2. Double-click `winmates.exe`.
+Download **`WinmatesSetup-<version>.exe`** from the
+[releases page](https://github.com/Zqqdd/Archmates/releases/latest) and run it. No admin rights needed:
+it installs Winmates for your account in `%LOCALAPPDATA%\Programs\Winmates`, adds it to the Start menu
+(and the desktop if you want), and to *Settings → Apps* to uninstall it.
 
-That's all, no admin rights needed. On first launch Winmates installs itself in
-`%LOCALAPPDATA%\Programs\Winmates`, adds a **Winmates** entry to the Start menu and turns on
-**start with Windows** (Settings → "Start Winmates with Windows" to turn it off). You can delete the downloaded
-folder afterwards.
+Winmates looks like the Linux rice: a small frosted-glass card with your friends (acrylic blur, your Windows
+accent color or your pywal / winwal colors), and a friend panel in the style of the Noctalia panel.
 
-- **Updates are automatic**: each time Winmates starts (at login, or when you open it), it checks GitHub for a
-  new release, checks its SHA-256 checksum, installs it and restarts on the new version.
-  Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn this off.
+- **WinmatesUpdater** starts with Windows at every login. It installs a new release if there is one
+  (SHA-256 checked), starts the service, then opens Winmates (*Settings → Open Winmates when I log in* to turn
+  that off). Winmates also checks for an update each time you open it.
+  Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn updates off.
 - **Closing the window keeps Winmates running** in the background: your friends still see you online and you
   still get notifications. *Settings → Quit Winmates* stops it completely.
 - Your data is in `%APPDATA%\Winmates` (friend code, friends list, conversations), received files in
@@ -37,8 +37,11 @@ folder afterwards.
 - Windows may show a firewall prompt the first time: allowing it lets friends reach you directly instead of
   through a relay.
 
-To uninstall: turn off "Start Winmates with Windows", quit Winmates, then delete
-`%LOCALAPPDATA%\Programs\Winmates` and the Start menu entry (and `%APPDATA%\Winmates` to remove your data).
+To uninstall: *Settings → Apps → Winmates → Uninstall*. Your friend code, friends list and conversations
+(`%APPDATA%\Winmates`) are kept, so you can reinstall later without adding your friends again.
+
+The zip (`winmates-<version>-x86_64-windows.zip`) still works too: unzip it and run `winmates.exe`, it installs
+itself the same way. It is also what WinmatesUpdater downloads.
 
 ### Linux: from a release archive (recommended, no Rust needed)
 
@@ -51,7 +54,8 @@ tar -xzf archmates-*-x86_64-linux.tar.gz && cd archmates-*-x86_64-linux && ./ins
 
 ### Linux: from source
 
-You need Rust (`sudo pacman -S rustup && rustup default stable`), then:
+You need Rust (`sudo pacman -S rustup && rustup default stable`) and `alsa-lib` (for voice messages, almost
+always installed already), then:
 
 ```bash
 git clone https://github.com/Zqqdd/Archmates.git && cd Archmates
@@ -106,6 +110,12 @@ usage, your conversation, a message field and a "send a file" button.
 - **Pictures** you send or receive are shown directly in the conversation. In Winmates (and the desktop app) and
   in the universal widget, they are **blurred automatically whenever the chat is not the active window**, and
   sharp again as soon as you come back to it.
+- **Voice messages** (up to 5 minutes): 🎤 in Winmates / the desktop app, or `archmates voice send <friend>`.
+  They are sent directly while your friend is online, play in Winmates, the universal widget and the Noctalia
+  panel (`archmates voice play <file>`), and are **deleted at every restart**, on both sides.
+- **Delete a conversation**: ⚙ in the friend panel (Winmates, universal widget, Noctalia) or
+  `archmates delete-chat <friend>`. It deletes every message and voice message, and every file that friend sent
+  you (their folder in your downloads), for good. Files you sent stay where they are.
 - **RAM and storage** usage is shared with your friends only. Turn it off with `archmates stats off`.
 
 ### Profile picture
@@ -267,7 +277,12 @@ traffic goes through a public Iroh relay, which only ever sees encrypted data.
 | File | Role |
 |---|---|
 | `src/main.rs` | the commands (`archmates code`, `add`, `list`…) |
-| `src/bin/winmates.rs` | Winmates, the Windows client (also a desktop app on Linux): window, install, updates |
+| `src/bin/winmates.rs` | Winmates, the Windows client (also a desktop app on Linux) |
+| `src/bin/winmates-updater.rs` | WinmatesUpdater: started at every Windows login, updates and starts everything |
+| `src/bin/winmates-setup.rs` | WinmatesSetup.exe, the installer (the programs are embedded in it) |
+| `src/ui/theme.rs` | the Archmates look for Winmates: colors, frosted glass, card |
+| `src/launcher.rs` | update, service, install and uninstall, shared by the three Windows programs |
+| `src/voice.rs` | voice messages: recording, playback, sending (`archmates/voice/1`) |
 | `src/platform.rs` | what differs between Linux and Windows: notifications, start with the system… |
 | `src/config.rs` | local files: key, friends list, invisible mode |
 | `src/profile.rs` | builds your profile (distro, kernel, picture…) |

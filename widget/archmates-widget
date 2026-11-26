@@ -112,7 +112,19 @@ button.accept { background: alpha(@accent, 0.45); }
 .bubble.mine { background-color: alpha(@accent, 0.25); }
 .bubble.theirs { background-color: alpha(@fg, 0.10); }
 .time { font-size: 9px; opacity: 0.6; }
+.friend-row { transition: background-color 150ms ease, margin 150ms ease; border-radius: 10px; }
 .friend-row:hover { background-color: alpha(@fg, 0.06); border-radius: 10px; }
+/* Animations: panels and new messages fade in, buttons glow on hover. */
+@keyframes archmates-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.chat-card { animation: archmates-fade-in 220ms ease-out; }
+.bubble.new { animation: archmates-fade-in 260ms ease-out; }
+.offer, .danger-box { animation: archmates-fade-in 200ms ease-out; }
+button { transition: background-color 150ms ease, opacity 150ms ease; }
+@keyframes archmates-pulse { from { opacity: 1; } to { opacity: 0.45; } }
+.dot.online { animation: archmates-pulse 1.6s ease-in-out infinite alternate; }
+.danger-box { padding: 10px; border-radius: 12px; background-color: alpha(#f2b8b5, 0.15); }
+button.danger { background: alpha(#f2b8b5, 0.45); }
+button.voice { background: @accent; color: @bg; border-radius: 14px; padding: 2px 12px; }
 entry { color: @fg; }
 levelbar block.filled { background-color: @accent; }
 levelbar block.empty { background-color: alpha(@fg, 0.15); }
@@ -464,6 +476,7 @@ class FriendWindow(Gtk.Window):
         root.append(self.status)
 
         self.pictures = []
+        self.confirm_delete = False
         # Pictures are blurred whenever you are not on this panel (another window is active).
         self.connect("notify::is-active", lambda *_: self.apply_blur())
         self.last_count = -1
@@ -552,11 +565,17 @@ class FriendWindow(Gtk.Window):
                           else f"last seen {ago(f['last_seen_ms'])}" if f.get("last_seen_ms") else "offline", "subtitle"))
         col.append(line)
         top.append(col)
+        gear = Gtk.Button(icon_name="emblem-system-symbolic", valign=Gtk.Align.START, tooltip_text="Delete conversation")
+        gear.add_css_class("ghost")
+        gear.connect("clicked", lambda _b: self.toggle_delete())
+        top.append(gear)
         close = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START)
         close.add_css_class("ghost")
         close.connect("clicked", lambda _b: self.close())
         top.append(close)
         self.header.append(top)
+        if self.confirm_delete:
+            self.header.append(self.delete_box(f))
         for o in f.get("offers", []):
             self.header.append(self.offer_card(f, o))
         stats = p.get("stats")
@@ -574,21 +593,27 @@ class FriendWindow(Gtk.Window):
         except ValueError:
             messages = []
         if len(messages) != self.last_count or any(not m.get("delivered") for m in messages):
+            # Only messages that just arrived get the fade-in.
+            first_new = self.last_count if self.last_count >= 0 else len(messages)
             self.last_count = len(messages)
             while (child := self.messages.get_first_child()) is not None:
                 self.messages.remove(child)
             self.pictures = []
             if not messages:
                 self.messages.append(label("No messages yet. Say hi!", "empty"))
-            for m in messages:
+            for index, m in enumerate(messages):
                 mine = m.get("dir") == "out"
                 b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
                             halign=Gtk.Align.END if mine else Gtk.Align.START)
                 b.add_css_class("bubble")
                 b.add_css_class("mine" if mine else "theirs")
+                if index >= first_new:
+                    b.add_css_class("new")
                 text = m.get("text", "") + ("  ⏳" if mine and not m.get("delivered") else "")
-                picture = image_preview(m.get("file"))
-                if picture is not None:
+                picture = None if m.get("voice") else image_preview(m.get("file"))
+                if m.get("voice"):
+                    b.append(self.voice_widget(m))
+                elif picture is not None:
                     self.pictures.append(picture)
                     b.append(picture)
                 else:
@@ -601,6 +626,51 @@ class FriendWindow(Gtk.Window):
             self.apply_blur()
             GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(1e9) or False)
         return True
+
+    def voice_widget(self, m):
+        """Voice messages: a play button while the recording exists (until the next restart)."""
+        secs = m.get("voice") or 0
+        length = f"{secs // 60}:{secs % 60:02d}"
+        path = m.get("file")
+        if not path or not os.path.exists(path):
+            return label(f"🎤 Voice message · {length} · expired", "subtitle")
+        button = Gtk.Button(label=f"▶  Voice message · {length}")
+        button.add_css_class("voice")
+        button.connect("clicked", lambda _b: subprocess.Popen([ARCHMATES, "voice", "play", path]))
+        return button
+
+    def toggle_delete(self):
+        self.confirm_delete = not self.confirm_delete
+        self.refresh()
+
+    def delete_box(self, f):
+        """⚙ → delete the whole conversation, with every file this friend sent you."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("danger-box")
+        text = Gtk.Label(label=f"Delete your conversation with {f.get('nickname')} for good? Every message, voice "
+                               "message and file they sent you is deleted from this PC. This cannot be undone.",
+                         xalign=0, wrap=True, max_width_chars=40)
+        text.add_css_class("subtitle")
+        box.append(text)
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.add_css_class("copy")
+        cancel.connect("clicked", lambda _b: self.toggle_delete())
+        delete = Gtk.Button(label="Delete")
+        delete.add_css_class("copy")
+        delete.add_css_class("danger")
+        delete.connect("clicked", lambda _b: self.delete_conversation())
+        buttons.append(cancel)
+        buttons.append(delete)
+        box.append(buttons)
+        return box
+
+    def delete_conversation(self):
+        self.confirm_delete = False
+        r = subprocess.run([ARCHMATES, "delete-chat", self.code, "--yes"], capture_output=True, text=True)
+        self.status.set_text((r.stdout or r.stderr).strip().splitlines()[-1] if (r.stdout or r.stderr).strip() else "")
+        self.last_count = -1
+        self.refresh()
 
     def apply_blur(self):
         for pic in self.pictures:

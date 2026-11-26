@@ -6,7 +6,7 @@ pkgdesc="Peer-to-peer friends list for Arch Linux: see when your friends are onl
 arch=('x86_64')
 url="https://github.com/Zqqdd/Archmates"
 license=('MIT')
-depends=('glibc' 'gcc-libs')
+depends=('glibc' 'gcc-libs' 'alsa-lib')
 optdepends=('noctalia: Noctalia desktop widget'
             'gtk4-layer-shell: universal desktop widget (without Noctalia)'
             'python-gobject: universal desktop widget (without Noctalia)'

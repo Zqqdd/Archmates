@@ -284,7 +284,7 @@ async fn serve(shared: &Arc<Shared>, connection: &Connection, id: EndpointId) ->
             Request::Message { id: msg_id, text, ms } => {
                 let text: String = text.chars().take(chat::MESSAGE_MAX).collect();
                 let code = id.to_string();
-                let message = chat::Message { id: msg_id, dir: "in".into(), text: text.clone(), ms, delivered: true, file: None };
+                let message = chat::Message { id: msg_id, dir: "in".into(), text: text.clone(), ms, delivered: true, file: None, voice: None };
                 if chat::receive(&shared.paths, &code, message)? {
                     let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
                     notify_message(&nickname, &text);
@@ -390,7 +390,7 @@ async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate:
             if text.chars().count() > chat::MESSAGE_MAX {
                 return fail(format!("messages are limited to {} characters", chat::MESSAGE_MAX));
             }
-            let message = chat::Message { id: chat::new_id(), dir: "out".into(), text, ms: now_ms(), delivered: false, file: None };
+            let message = chat::Message { id: chat::new_id(), dir: "out".into(), text, ms: now_ms(), delivered: false, file: None, voice: None };
             if let Err(err) = chat::append(&shared.paths, &code, &message) {
                 return fail(format!("{err:#}"));
             }
@@ -409,6 +409,31 @@ async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate:
                 fail("this file offer has expired".into())
             }
         }
+        Command::SendVoice { to, path } => {
+            let Some((id, code, nickname)) = resolve(&shared, &to) else {
+                return fail(format!("no friend named \"{to}\""));
+            };
+            let wav = match std::fs::read(&path) {
+                Ok(w) => w,
+                Err(e) => return fail(format!("cannot read the recording: {e}")),
+            };
+            let msg_id = chat::new_id();
+            let ms = now_ms();
+            match crate::voice::send(&endpoint, id, &msg_id, &wav, ms).await {
+                Ok(secs) => {
+                    let kept = crate::voice::keep_sent(&shared.paths, &code, &msg_id, &wav).ok();
+                    let message = chat::Message {
+                        id: msg_id, dir: "out".into(),
+                        text: format!("🎤 Voice message ({})", crate::voice::format_secs(secs)),
+                        ms, delivered: true, file: kept.map(|p| p.to_string_lossy().into_owned()), voice: Some(secs),
+                    };
+                    let _ = chat::append(&shared.paths, &code, &message);
+                    let _ = shared.publish();
+                    Answer { ok: true, message: format!("voice message sent to {nickname}") }
+                }
+                Err(err) => fail(format!("{err:#}")),
+            }
+        }
         Command::SendFile { to, path } => {
             let Some((id, code, nickname)) = resolve(&shared, &to) else {
                 return fail(format!("no friend named \"{to}\""));
@@ -417,7 +442,7 @@ async fn handle_command(endpoint: Endpoint, shared: Arc<Shared>, command: crate:
                 Ok(name) => {
                     let message = chat::Message {
                         id: chat::new_id(), dir: "out".into(), text: format!("📎 {name}"),
-                        ms: now_ms(), delivered: true, file: Some(path.clone()),
+                        ms: now_ms(), delivered: true, file: Some(path.clone()), voice: None,
                     };
                     let _ = chat::append(&shared.paths, &code, &message);
                     let _ = shared.publish();
@@ -499,6 +524,8 @@ pub async fn run() -> Result<()> {
             }
         }
     }
+    // Voice messages only last until the next restart.
+    crate::voice::clear(&paths);
     let shared = Arc::new(Shared {
         paths,
         me,
@@ -543,7 +570,7 @@ pub async fn run() -> Result<()> {
             let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
             let message = chat::Message {
                 id: chat::new_id(), dir: "in".into(), text: format!("📎 {name}"),
-                ms: now_ms(), delivered: true, file: Some(saved.to_string_lossy().into_owned()),
+                ms: now_ms(), delivered: true, file: Some(saved.to_string_lossy().into_owned()), voice: None,
             };
             let _ = chat::append(&shared.paths, &code, &message);
             crate::platform::notify(
@@ -556,9 +583,26 @@ pub async fn run() -> Result<()> {
         }) as Arc<crate::transfer::SavedFn>
     };
     let on_file = FileReceiver { on_offer, on_saved };
+    let on_voice = {
+        let shared = shared.clone();
+        Arc::new(move |id: EndpointId, msg_id: String, secs: u32, saved: std::path::PathBuf, ms: u64| {
+            let code = id.to_string();
+            let nickname = shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
+            let message = chat::Message {
+                id: msg_id, dir: "in".into(),
+                text: format!("🎤 Voice message ({})", crate::voice::format_secs(secs)),
+                ms, delivered: true, file: Some(saved.to_string_lossy().into_owned()), voice: Some(secs),
+            };
+            if chat::receive(&shared.paths, &code, message).unwrap_or(false) {
+                crate::platform::notify(&nickname, &format!("🎤 Voice message ({})", crate::voice::format_secs(secs)), None, true);
+            }
+            let _ = shared.publish();
+        }) as Arc<crate::voice::ReceivedFn>
+    };
     let router = Router::builder(endpoint.clone())
         .accept(ALPN, Greeter(shared.clone()))
         .accept(FILE_ALPN, on_file)
+        .accept(crate::voice::VOICE_ALPN, crate::voice::VoiceReceiver { on_received: on_voice })
         .spawn();
     {
         let (endpoint, shared) = (endpoint.clone(), shared.clone());
