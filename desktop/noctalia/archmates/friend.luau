@@ -153,19 +153,127 @@ local function quietButton(key, opts)
   }, content)
 end
 
+-- ── Voice messages ─────────────────────────────────────────────────────────────
+-- The service records and plays them (its "voice desk"), and describes what it is doing in
+-- ~/.cache/archmates/voice-desk.json, rewritten ten times a second while busy. The panel reads
+-- that file and asks the service through `archmates voice …`: the same recorder as Winmates
+-- and the universal widget (record → listen → send).
+local DESK = noctalia.expandPath("~/.cache/archmates/voice-desk.json")
+local desk = { state = "idle" }
+
+local function loadDesk()
+  local txt = noctalia.readFile(DESK)
+  local ok, data = pcall(noctalia.json.decode, txt or "")
+  if ok and data and noctalia.nowMs() - (data.ms or 0) < 5000 then desk = data else desk = { state = "idle" } end
+end
+
+local function deskIsMine()
+  return desk.state ~= "idle" and desk.to == code
+end
+
+local function progressOf(id)
+  local p = desk.playing
+  if p and p.id == id then return math.clamp(p.position / math.max(p.secs, 0.1), 0, 1) end
+  return nil
+end
+
+local function voice(args, quiet)
+  noctalia.runAsync(args, function(r)
+    if r.exitCode ~= 0 then
+      status = "Error: " .. noctalia.string.trim(r.stderr ~= "" and r.stderr or r.stdout):gsub("^Error: ", "")
+    elseif not quiet then
+      status = noctalia.string.trim(r.stdout):gsub("^[✓■●▶] ", "")
+    end
+    loadDesk()
+    loadChat()
+    render()
+  end, 60000)
+end
+
+-- The same waveform as in Winmates and the universal widget: bar heights come from the message
+-- time, so a voice message looks the same everywhere. It fills up while playing.
+local function waveform(key, seed, progress)
+  local bars = {}
+  for i = 0, 25 do
+    local h = 5 + bit32.rshift((i * 2654435761 + seed) % 4294967296, 27) * 0.55
+    local done = progress ~= nil and i / 26 < progress
+    table.insert(bars, ui.box({ key = key .. "-" .. i, width = 2.5, height = h, radius = 1,
+      fill = if done then "primary" else "on_surface/0.35" }))
+  end
+  return ui.row({ gap = 2.5, align = "center", height = 24, width = 130 }, bars)
+end
+
+local function playButton(playing, onClick)
+  return ui.row({ width = 28, height = 28, radius = 14, fill = "primary", align = "center", justify = "center",
+    tooltip = if playing then "Stop" else "Play", onClick = onClick }, {
+    ui.glyph({ name = if playing then "player-stop-filled" else "player-play-filled", size = 13, color = "on_primary" }),
+  })
+end
+
+local function voiceBubble(m)
+  if not (m.file and noctalia.fileExists(m.file)) then
+    return ui.label({ text = "🎤 Voice message · " .. secs(m.voice) .. " · expired", fontSize = 13, color = "on_surface_variant" })
+  end
+  local progress = progressOf(m.id)
+  return ui.row({ gap = 8, align = "center" }, {
+    playButton(progress ~= nil, function()
+      if progress ~= nil then voice({ BIN, "voice", "stop-playing" }, true)
+      else voice({ BIN, "voice", "play", m.file, "--id", m.id, "--no-wait" }, true) end
+    end),
+    waveform("wave-" .. m.id, m.ms % 4294967296, progress or 0),
+    ui.label({ text = secs(m.voice), fontSize = 11, color = "on_surface_variant" }),
+  })
+end
+
+-- The message field, or the recorder while recording / listening for this friend.
+local function recorder()
+  if desk.state == "recording" then
+    local pulse = (noctalia.nowMs() // 500) % 2 == 0
+    return ui.row({ gap = 6, align = "center" }, {
+      quietButton("rec-cancel", { glyph = "x", tooltip = "Cancel", onClick = function() voice({ BIN, "voice", "discard" }, true) end }),
+      ui.box({ width = 10, height = 10, radius = 5, fill = if pulse then "error" else "error/0.45" }),
+      ui.label({ text = secs(math.floor(desk.secs or 0)) .. " / 5:00", fontFamily = "DejaVu Sans Mono", fontSize = 12, color = "on_surface" }),
+      ui.column({ flexGrow = 1, gap = 4 }, {
+        ui.label({ text = "", fontSize = 1 }),
+        ui.progress({ progress = math.min((desk.level or 0) * 1.6, 1), fill = "primary", track = "surface_variant", height = 5, radius = 3 }),
+      }),
+      quietButton("rec-stop", { glyph = "player-stop-filled", tooltip = "Stop and listen", onClick = function()
+        voice({ BIN, "voice", "stop" }, true)
+      end }),
+      ui.button({ glyph = "send", variant = "primary", onClick = function()
+        status = "Sending the voice message…"
+        voice({ BIN, "voice", "send-recording" })
+      end }),
+    })
+  end
+  -- Review (or sending): listen, then send or discard.
+  local sending = desk.state == "sending"
+  local progress = progressOf("draft")
+  return ui.row({ gap = 6, align = "center" }, {
+    quietButton("rec-discard", { glyph = "trash", tooltip = "Discard", onClick = function()
+      if not sending then voice({ BIN, "voice", "discard" }, true) end
+    end }),
+    playButton(progress ~= nil, function()
+      if progress ~= nil then voice({ BIN, "voice", "stop-playing" }, true)
+      else voice({ BIN, "voice", "play", "--no-wait" }, true) end
+    end),
+    waveform("wave-draft", 0, progress or 0),
+    ui.label({ text = secs(math.floor(desk.secs or 0)), fontSize = 11, color = "on_surface_variant", flexGrow = 1 }),
+    ui.button({ glyph = "send", variant = "primary", onClick = function()
+      if sending then return end
+      status = "Sending the voice message…"
+      voice({ BIN, "voice", "send-recording" })
+    end }),
+  })
+end
+
 local function bubble(m)
   local mine = m.dir == "out"
   local text = m.text
   if mine and not m.delivered then text = text .. "  ⏳" end
   local content = {}
   if m.voice then
-    -- Voice messages live until the next restart.
-    if m.file and noctalia.fileExists(m.file) then
-      table.insert(content, ui.button({ text = "▶  Voice message · " .. secs(m.voice), variant = "primary", controlSize = "sm",
-        onClick = function() noctalia.runAsync({ BIN, "voice", "play", m.file }, function(_r) end, 330000) end }))
-    else
-      table.insert(content, ui.label({ text = "🎤 Voice message · " .. secs(m.voice) .. " · expired", fontSize = 13, color = "on_surface_variant" }))
-    end
+    table.insert(content, voiceBubble(m))
   elseif isImage(m.file) then
     table.insert(content, ui.image({ path = m.file, width = 240, height = 170, radius = 8, fit = "cover" }))
   else
@@ -263,16 +371,27 @@ function render()
   end
   table.insert(rows, ui.scroll({ flexGrow = 1, gap = 6, stickToBottom = true }, bubbles))
 
-  table.insert(rows, ui.row({ gap = 6, align = "center" }, {
-    quietButton("attach", { glyph = "paperclip", tooltip = "Send a file", onClick = pickAndSendFile }),
-    ui.input({
-      key = "msg-" .. inputRev, placeholder = "Message " .. friend.nickname .. "…", flexGrow = 1,
-      submitOnEnter = true, focus = true,
-      onChange = function(text) draft = text end,
-      onSubmit = function(text) sendMessage(text) end,
-    }),
-    ui.button({ glyph = "send", variant = "primary", onClick = function() sendMessage(draft) end }),
-  }))
+  if deskIsMine() then
+    table.insert(rows, recorder())
+  else
+    table.insert(rows, ui.row({ gap = 6, align = "center" }, {
+      quietButton("attach", { glyph = "paperclip", tooltip = "Send a file", onClick = pickAndSendFile }),
+      quietButton("mic", { glyph = "microphone", tooltip = "Record a voice message (5 min max)", onClick = function()
+        status = nil
+        voice({ BIN, "voice", "record", code }, true)
+      end }),
+      ui.input({
+        key = "msg-" .. inputRev, placeholder = "Message " .. friend.nickname .. "…", flexGrow = 1,
+        submitOnEnter = true, focus = true,
+        onChange = function(text) draft = text end,
+        onSubmit = function(text) sendMessage(text) end,
+      }),
+      ui.button({ glyph = "send", variant = "primary", onClick = function() sendMessage(draft) end }),
+    }))
+  end
+  if deskIsMine() and desk.error and desk.state == "review" then
+    table.insert(rows, ui.label({ text = "Error: " .. desk.error, fontSize = 11, color = "error", maxWidth = 360 }))
+  end
   if status then
     table.insert(rows, ui.label({ text = status, fontSize = 11, color = if status:sub(1, 6) == "Error:" then "error" else "on_surface_variant" }))
   end
@@ -297,15 +416,24 @@ function onOpen(_context)
   status = nil
   messages = {}
   loadFriend()
+  loadDesk()
   render()
   loadChat()
   panel.setWantsSecondTicks(true)
 end
 
 local ticks = 0
+local lastSlow = 0
 function update()
   ticks += 1
-  if ticks % 3 == 0 then
+  local before = desk.state .. tostring(desk.playing ~= nil)
+  loadDesk()
+  local busy = desk.state == "recording" or desk.state == "sending" or desk.playing ~= nil
+  -- Ten times a second while recording or playing (time, level, progress), else every second.
+  noctalia.setUpdateInterval(if busy then 100 else 1000)
+  if busy or before ~= desk.state .. tostring(desk.playing ~= nil) then render() end
+  if noctalia.nowMs() - lastSlow >= 3000 then
+    lastSlow = noctalia.nowMs()
     loadFriend()
     loadChat()
   end

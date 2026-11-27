@@ -1,6 +1,8 @@
-//! The screens of the window: header, friends list, conversation, settings.
+//! What Winmates draws: the desktop widget, and the panel (conversation, add a friend, settings).
 
 mod chat;
-mod header;
-mod list;
+mod panel;
 mod settings;
+mod widget;
+
+pub use widget::WIDGET_W;

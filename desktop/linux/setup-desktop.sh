@@ -2,7 +2,8 @@
 # Sets up the desktop side of archmates for the current user (no admin rights needed):
 #   - Noctalia: installs the widget and places it at the top right of the main screen
 #   - otherwise: checks what the universal widget (archmates-widget) needs
-#   - Hyprland: adds a frosted-glass blur rule behind the widget
+#   - Hyprland: adds a frosted-glass blur rule behind the widget (the widget also asks for it
+#     live each time it starts; elsewhere it blurs the wallpaper itself)
 #
 # Used by installer.sh, and by the AUR package as `archmates-setup-desktop`.
 # Safe to run again: an already placed widget is left where it is.
@@ -95,7 +96,20 @@ hl.layer_rule({ name = "archmates-glass-v3-chat", match = { namespace = "^archma
 hl.layer_rule({ name = "archmates-glass-v3-noctalia", match = { namespace = "^noctalia-desktop-widget-.*" }, blur = true, ignore_alpha = 0.05 })'
   elif [[ -f "$dir/hyprland.conf" ]]; then
     file="$dir/hyprland.conf"
-    rule='
+    local minor
+    minor=$(hyprctl version 2>/dev/null | grep -oE 'Hyprland [0-9]+\.[0-9]+' | head -1 | cut -d. -f2)
+    if [[ "${minor:-0}" -ge 53 ]]; then
+      # Hyprland 0.53 rewrote the rule syntax ("blur on, match:namespace …").
+      rule='
+# archmates: frosted glass behind the widgets and the chat panel (archmates-glass-v3)
+layerrule = blur on, match:namespace ^archmates-widget$
+layerrule = ignore_alpha 0.05, match:namespace ^archmates-widget$
+layerrule = blur on, match:namespace ^archmates-chat$
+layerrule = ignore_alpha 0.05, match:namespace ^archmates-chat$
+layerrule = blur on, match:namespace ^noctalia-desktop-widget-.*
+layerrule = ignore_alpha 0.05, match:namespace ^noctalia-desktop-widget-.*'
+    else
+      rule='
 # archmates: frosted glass behind the widgets and the chat panel (archmates-glass-v3)
 layerrule = blur, ^archmates-widget$
 layerrule = ignorealpha 0.05, ^archmates-widget$
@@ -103,6 +117,7 @@ layerrule = blur, ^archmates-chat$
 layerrule = ignorealpha 0.05, ^archmates-chat$
 layerrule = blur, ^noctalia-desktop-widget-.*
 layerrule = ignorealpha 0.05, ^noctalia-desktop-widget-.*'
+    fi
   else
     return 0
   fi

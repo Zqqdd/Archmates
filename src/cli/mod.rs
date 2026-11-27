@@ -139,8 +139,34 @@ enum VoiceCommand {
         #[arg(value_name = "NICKNAME|CODE")]
         to: String,
     },
-    /// Play a voice message (the file shown in the conversation)
-    Play { file: std::path::PathBuf },
+    /// Start recording a voice message for a friend (stop it with `voice stop`)
+    Record {
+        #[arg(value_name = "NICKNAME|CODE")]
+        to: String,
+    },
+    /// Stop the recording and keep it to listen to before sending
+    Stop,
+    /// Send the recording (stops it first if it is still going)
+    SendRecording,
+    /// Cancel the recording, or throw away the one waiting to be sent
+    Discard,
+    /// Play a voice message (the file shown in the conversation); without a file, the recording
+    Play {
+        file: Option<std::path::PathBuf>,
+        /// Message id, shown in the status while it plays
+        #[arg(long)]
+        id: Option<String>,
+        /// Return right away instead of waiting for the end
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Stop playing
+    StopPlaying,
+    /// What is being recorded or played
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -173,8 +199,16 @@ pub async fn run() -> Result<()> {
         Command::Offers => messages::offers(&paths),
         Command::Chat { with, count, json } => messages::chat(&paths, with, count, json),
         Command::DeleteChat { with, yes } => messages::delete_chat(&paths, with, yes),
-        Command::Voice(VoiceCommand::Send { to }) => voice::send(to).await,
-        Command::Voice(VoiceCommand::Play { file }) => voice::play(&file),
+        Command::Voice(v) => match v {
+            VoiceCommand::Send { to } => voice::send(to).await,
+            VoiceCommand::Record { to } => voice::record(to).await,
+            VoiceCommand::Stop => voice::stop().await,
+            VoiceCommand::SendRecording => voice::send_recording().await,
+            VoiceCommand::Discard => voice::discard().await,
+            VoiceCommand::Play { file, id, no_wait } => voice::play(file, id, no_wait).await,
+            VoiceCommand::StopPlaying => voice::stop_playing().await,
+            VoiceCommand::Status { json } => voice::status(json),
+        },
         Command::Stats { state } => profile::stats(&paths, matches!(state, OnOff::On)),
         Command::Avatar { image, remove } => profile::avatar(&paths, image, remove),
         Command::Widget { mode } => system::widget(

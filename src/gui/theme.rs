@@ -120,7 +120,7 @@ impl Theme {
         visuals.window_stroke = Stroke::new(1.0_f32, alpha(self.fg, 0.22));
         visuals.window_corner_radius = CornerRadius::same(16);
         visuals.menu_corner_radius = CornerRadius::same(12);
-        visuals.extreme_bg_color = alpha(self.bg, 0.55);
+        visuals.extreme_bg_color = alpha(self.bg, 0.45);
         visuals.faint_bg_color = alpha(self.fg, 0.06);
         visuals.hyperlink_color = self.accent;
         visuals.selection.bg_fill = alpha(self.accent, 0.45);
@@ -132,11 +132,12 @@ impl Theme {
         w.noninteractive.fg_stroke = Stroke::new(1.0_f32, self.fg);
         w.inactive.weak_bg_fill = alpha(self.fg, 0.08);
         w.inactive.bg_fill = alpha(self.fg, 0.10);
-        w.inactive.bg_stroke = Stroke::NONE;
+        // Also the border of text fields (focused: the accent, like Noctalia's input).
+        w.inactive.bg_stroke = Stroke::new(1.0_f32, alpha(self.fg, 0.25));
         w.inactive.fg_stroke = Stroke::new(1.0_f32, self.fg);
         w.hovered.weak_bg_fill = alpha(self.fg, 0.18);
         w.hovered.bg_fill = alpha(self.fg, 0.18);
-        w.hovered.bg_stroke = Stroke::NONE;
+        w.hovered.bg_stroke = Stroke::new(1.0_f32, alpha(self.fg, 0.40));
         w.hovered.fg_stroke = Stroke::new(1.0_f32, self.fg);
         w.active.weak_bg_fill = alpha(self.accent, 0.40);
         w.active.bg_fill = alpha(self.accent, 0.40);
@@ -165,6 +166,93 @@ impl Theme {
     }
 }
 
+/// The Noctalia panel's icons (Tabler icon font subset, see scripts/make-icons.py).
+#[path = "icons.rs"]
+pub mod icons;
+
+/// Font family of the icons.
+pub fn icon_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("icons".into()))
+}
+
+/// Bold text (names, titles), in the system font like Noctalia.
+pub fn bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("bold".into()))
+}
+
+/// Bold monospace (the widget title).
+pub fn mono_bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("mono-bold".into()))
+}
+
+/// The desktop's own fonts, as Noctalia draws with them: "sans-serif" from fontconfig on
+/// Linux (Noto Sans…), Segoe UI on Windows; and the bold monospace of the widget title.
+fn system_font(kind: &str) -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        let dir = std::path::PathBuf::from(std::env::var_os("WINDIR")?).join("Fonts");
+        let files: &[&str] = match kind {
+            "regular" => &["segoeui.ttf"],
+            "bold" => &["seguisb.ttf", "segoeuib.ttf"],
+            _ => &["consolab.ttf"],
+        };
+        files.iter().find_map(|f| std::fs::read(dir.join(f)).ok())
+    }
+    #[cfg(not(windows))]
+    {
+        let pattern = match kind {
+            "regular" => "sans-serif",
+            "bold" => "sans-serif:semibold",
+            _ => "DejaVu Sans Mono:bold",
+        };
+        let out = std::process::Command::new("fc-match").args(["-f", "%{file}", pattern]).output().ok()?;
+        let path = String::from_utf8(out.stdout).ok()?;
+        // Collections (.ttc) and variable fonts may not draw well: only plain font files.
+        if !(path.ends_with(".ttf") || path.ends_with(".otf")) {
+            return None;
+        }
+        std::fs::read(path).ok()
+    }
+}
+
+/// Adds the system fonts and the icon font (also as a fallback, so icon characters show in
+/// any text). Without system fonts, egui's own are used (bold then falls back to regular).
+pub fn install_fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontFamily};
+    use std::sync::Arc;
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "archmates-icons".into(),
+        Arc::new(FontData::from_static(include_bytes!("../../assets/icons/archmates-icons.ttf"))),
+    );
+    let mut add = |name: &str, kind: &str| {
+        let data = system_font(kind)?;
+        fonts.font_data.insert(name.into(), Arc::new(FontData::from_owned(data)));
+        Some(name.to_string())
+    };
+    let regular = add("system", "regular");
+    let bold = add("system-bold", "bold");
+    let mono_bold = add("system-mono-bold", "mono");
+    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let monospace = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    if let Some(r) = &regular {
+        fonts.families.entry(FontFamily::Proportional).or_default().insert(0, r.clone());
+    }
+    let with =
+        |first: Option<String>, rest: &[String]| first.into_iter().chain(rest.iter().cloned()).collect::<Vec<_>>();
+    let base = fonts.families[&FontFamily::Proportional].clone();
+    fonts.families.insert(FontFamily::Name("bold".into()), with(bold, &base));
+    fonts.families.insert(FontFamily::Name("mono-bold".into()), with(mono_bold, &monospace));
+    let _ = proportional;
+    fonts.families.insert(FontFamily::Name("icons".into()), vec!["archmates-icons".into()]);
+    for family in fonts.families.values_mut() {
+        if !family.iter().any(|f| f == "archmates-icons") {
+            family.push("archmates-icons".into());
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
 /// Windows: frosted-glass window (acrylic, like Hyprland's blur behind the Linux widget) with
 /// rounded corners. Returns true when the glass is on (the card can then be more transparent).
 pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
@@ -172,22 +260,10 @@ pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let Ok(handle) = cc.window_handle() else { return false };
-        if let RawWindowHandle::Win32(h) = handle.as_raw() {
-            use windows_sys::Win32::Graphics::Dwm::{
-                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
-            };
-            let pref = DWMWCP_ROUND;
-            unsafe {
-                DwmSetWindowAttribute(
-                    h.hwnd.get() as _,
-                    DWMWA_WINDOW_CORNER_PREFERENCE as _,
-                    (&pref as *const i32).cast(),
-                    4,
-                );
-            }
+        match handle.as_raw() {
+            RawWindowHandle::Win32(h) => glass_hwnd(h.hwnd.get(), theme),
+            _ => false,
         }
-        let tint = (theme.bg.r(), theme.bg.g(), theme.bg.b(), if theme.dark { 110 } else { 90 });
-        window_vibrancy::apply_acrylic(&handle, Some(tint)).is_ok()
     }
     #[cfg(not(windows))]
     {
@@ -196,72 +272,133 @@ pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
     }
 }
 
-/// The card behind everything: translucent like `.card` on Linux (alpha 0.35 over the blur),
-/// more opaque when there is no glass behind the window.
+/// The same glass on any window of this program, by its handle (used for the friend panel,
+/// whose handle eframe does not give out: it is found by its title).
+#[cfg(windows)]
+pub fn glass_hwnd(hwnd: isize, theme: &Theme) -> bool {
+    use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+    struct Hwnd(std::num::NonZeroIsize);
+    impl HasWindowHandle for Hwnd {
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            // Safety: the window outlives this call (it is one of ours, on screen).
+            Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(Win32WindowHandle::new(self.0))) })
+        }
+    }
+    let Some(handle) = std::num::NonZeroIsize::new(hwnd) else { return false };
+    let pref = DWMWCP_ROUND;
+    unsafe {
+        DwmSetWindowAttribute(hwnd as _, DWMWA_WINDOW_CORNER_PREFERENCE as _, (&pref as *const i32).cast(), 4);
+    }
+    let tint = (theme.bg.r(), theme.bg.g(), theme.bg.b(), if theme.dark { 110 } else { 90 });
+    window_vibrancy::apply_acrylic(Hwnd(handle), Some(tint)).is_ok()
+}
+
+/// The card behind everything, like the Noctalia glass (`surface/0.18` and a thin rim): a tint
+/// over the blur, a soft light from the top edge, more opaque when there is no glass behind.
 pub fn card(ui: &mut egui::Ui, theme: &Theme, glass: bool) {
     let rect = ui.max_rect();
-    let (fill, radius) = if glass { (alpha(theme.bg, 0.35), 0) } else { (alpha(theme.bg, 0.92), 18) };
-    ui.painter().rect(
+    let (fill, radius) = if glass { (alpha(theme.bg, 0.35), 0) } else { (alpha(theme.bg, 0.94), 18) };
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(radius), fill);
+    // The light: a gradient from the top edge, fading out at 45 % of the height.
+    let top = rect.with_max_y(rect.top() + rect.height() * 0.45);
+    let mut mesh = egui::Mesh::default();
+    let light = alpha(Color32::WHITE, 0.06);
+    mesh.colored_vertex(top.left_top(), light);
+    mesh.colored_vertex(top.right_top(), light);
+    mesh.colored_vertex(top.right_bottom(), Color32::TRANSPARENT);
+    mesh.colored_vertex(top.left_bottom(), Color32::TRANSPARENT);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    if glass {
+        painter.add(mesh);
+    }
+    painter.rect_stroke(
         rect,
         CornerRadius::same(radius),
-        fill,
-        Stroke::new(1.0_f32, alpha(theme.fg, 0.22)),
+        Stroke::new(1.0_f32, alpha(theme.fg, 0.28)),
         egui::StrokeKind::Inside,
     );
 }
 
-/// The little title: icon + lowercase monospace name in the accent color, as on Linux.
+/// The little title, as on the Noctalia widget: users icon + name in monospace, accent color.
 pub fn title(ui: &mut egui::Ui, theme: &Theme, text: &str) {
-    ui.label(egui::RichText::new(format!("👥  {text}")).monospace().strong().size(14.0).color(theme.accent));
+    ui.label(egui::RichText::new(icons::USERS.to_string()).font(icon_font(15.0)).color(theme.accent));
+    ui.label(egui::RichText::new(text).font(mono_bold(14.0)).color(theme.accent));
 }
 
-/// Icons drawn with lines instead of font characters: egui's built-in fonts have no ✕, and
-/// ←, ➤ only exist in its monospace font, so as text they showed as empty squares or nothing.
+/// How an icon button looks, after the Noctalia panel's buttons.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Icon {
-    Close,
-    Minimize,
-    Back,
-    Send,
+pub enum Look {
+    /// No background until hovered (a neutral one: Noctalia's "ghost" turns green in some themes).
+    Quiet,
+    /// Filled with the accent color (send).
+    Primary,
+    /// A round accent button (play / stop a voice message).
+    Round,
 }
 
-/// A borderless icon button (hover: a faint background), or `filled` with the accent color.
-pub fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: Icon, hint: &str, filled: bool) -> egui::Response {
-    let size = if filled { egui::vec2(34.0, 32.0) } else { egui::Vec2::splat(30.0) };
+/// An icon button from the Noctalia icon set.
+pub fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: char, hint: &str, look: Look) -> egui::Response {
+    let size = if look == Look::Round { egui::Vec2::splat(28.0) } else { egui::Vec2::splat(32.0) };
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
     let painter = ui.painter();
-    if filled {
-        painter.rect_filled(rect, 10, mix(theme.accent, theme.fg, 0.12 * hover));
-    } else if hover > 0.0 {
+    let (color, glyph) = match look {
+        Look::Quiet => {
+            if hover > 0.0 {
+                painter.rect_filled(rect, 8, alpha(theme.fg, 0.10 * hover));
+            }
+            (theme.fg, 16.0)
+        }
+        Look::Primary => {
+            painter.rect_filled(rect, 8, mix(theme.accent, theme.fg, 0.12 * hover));
+            (theme.on_accent(), 15.0)
+        }
+        Look::Round => {
+            painter.circle_filled(rect.center(), 14.0, mix(theme.accent, theme.fg, 0.12 * hover));
+            (theme.on_accent(), 13.0)
+        }
+    };
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, icon, icon_font(glyph), color);
+    response.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A quiet button with an icon and a label ("Copy my code", "Decline"…), like Noctalia's.
+pub fn quiet_button(ui: &mut egui::Ui, theme: &Theme, icon: Option<char>, text: &str) -> egui::Response {
+    let font = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, theme.fg);
+    let icon_w = if icon.is_some() { 14.0 + 6.0 } else { 0.0 };
+    let size = egui::vec2(galley.size().x + icon_w + 20.0, 30.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    let painter = ui.painter();
+    if hover > 0.0 {
         painter.rect_filled(rect, 8, alpha(theme.fg, 0.10 * hover));
     }
-    let color = if filled { theme.on_accent() } else { theme.fg };
-    let stroke = Stroke::new(1.7_f32, color);
-    let c = rect.center();
-    let p = |dx: f32, dy: f32| c + egui::vec2(dx, dy);
-    match icon {
-        Icon::Close => {
-            painter.line_segment([p(-5.0, -5.0), p(5.0, 5.0)], stroke);
-            painter.line_segment([p(5.0, -5.0), p(-5.0, 5.0)], stroke);
-        }
-        Icon::Minimize => {
-            painter.line_segment([p(-6.0, 0.0), p(6.0, 0.0)], stroke);
-        }
-        Icon::Back => {
-            painter.line_segment([p(-6.0, 0.0), p(6.0, 0.0)], stroke);
-            painter.line_segment([p(-6.0, 0.0), p(-1.5, -4.5)], stroke);
-            painter.line_segment([p(-6.0, 0.0), p(-1.5, 4.5)], stroke);
-        }
-        Icon::Send => {
-            // A paper plane pointing right.
-            let tip = p(7.0, 0.0);
-            painter.add(egui::Shape::convex_polygon(
-                vec![p(-7.0, -6.5), tip, p(-7.0, 6.5), p(-4.0, 0.0)],
-                color,
-                Stroke::NONE,
-            ));
-        }
+    let mut x = rect.left() + 10.0;
+    if let Some(icon) = icon {
+        painter.text(
+            egui::pos2(x + 7.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            icon_font(14.0),
+            theme.fg,
+        );
+        x += icon_w;
     }
-    response.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand)
+    painter.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, theme.fg);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A filled accent button with a label ("Accept", "Add"), like Noctalia's primary buttons.
+pub fn primary_button(ui: &mut egui::Ui, theme: &Theme, text: &str) -> egui::Response {
+    let font = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, theme.on_accent());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(galley.size().x + 24.0, 30.0), egui::Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    ui.painter().rect_filled(rect, 8, mix(theme.accent, theme.fg, 0.12 * hover));
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, theme.on_accent());
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

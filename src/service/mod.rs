@@ -14,6 +14,7 @@ mod presence;
 mod receivers;
 mod state;
 mod updates;
+mod voice_desk;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -67,7 +68,9 @@ pub async fn run() -> Result<()> {
         notified: Mutex::new(HashSet::new()),
         offers: Mutex::new(HashMap::new()),
         update_available: Mutex::new(None),
+        voice: Default::default(),
     });
+    tokio::spawn(voice_desk::Desk::run(shared.clone()));
     tokio::spawn(updates::check_updates(shared.clone()));
     #[cfg(not(windows))]
     tokio::spawn(crate::platform::linux::widget::supervise(Paths::detect()));

@@ -2,7 +2,7 @@
 
 use archmates::service::{FriendState, Status};
 use archmates::time::ago;
-use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2, vec2};
+use eframe::egui::{self, Color32, Sense, Stroke, Vec2, vec2};
 
 use crate::app::App;
 use crate::theme::{self, alpha, mix};
@@ -77,21 +77,33 @@ impl App {
         ui.painter().rect_filled(fill, 3, color);
     }
 
-    pub fn ghost(&self, ui: &mut egui::Ui, text: &str, hint: &str) -> egui::Response {
-        ui.add(egui::Button::new(RichText::new(text).size(15.0)).frame(false).min_size(Vec2::splat(30.0)))
-            .on_hover_text(hint)
+    /// The unread count, a small accent pill (as on the Noctalia widget).
+    pub fn badge(&self, ui: &mut egui::Ui, count: usize) {
+        let galley =
+            ui.painter().layout_no_wrap(count.to_string(), egui::FontId::proportional(10.0), self.theme.on_accent());
+        let (rect, _) = ui.allocate_exact_size(vec2(galley.size().x + 12.0, 16.0), Sense::hover());
+        ui.painter().rect_filled(rect, 8, self.theme.accent);
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, self.theme.on_accent());
     }
 
-    pub fn pill(&self, ui: &mut egui::Ui, text: &str) -> egui::Response {
-        ui.add(egui::Button::new(RichText::new(text).small()).fill(alpha(self.theme.fg, 0.08)).corner_radius(10))
+    /// The voice message waveform, identical in the Noctalia panel and the Linux widget: bar
+    /// heights come from the message time, filled with the accent color as it plays.
+    pub fn waveform(&self, ui: &mut egui::Ui, seed: u64, progress: f32) {
+        let (rect, _) = ui.allocate_exact_size(vec2(130.0, 24.0), Sense::hover());
+        for i in 0..26u32 {
+            let x = rect.left() + i as f32 * 5.0;
+            let bits = (i.wrapping_mul(2_654_435_761).wrapping_add(seed as u32)) >> 27;
+            let h = 5.0 + bits as f32 * 0.55;
+            let done = (i as f32 / 26.0) < progress;
+            let color = if done { self.theme.accent } else { alpha(self.theme.fg, 0.35) };
+            let bar = egui::Rect::from_center_size(egui::pos2(x + 1.25, rect.center().y), vec2(2.5, h));
+            ui.painter().rect_filled(bar, 1, color);
+        }
     }
+}
 
-    pub fn accent_button(&self, ui: &mut egui::Ui, text: &str) -> egui::Response {
-        ui.add(
-            egui::Button::new(RichText::new(text).strong().color(self.theme.on_accent()))
-                .fill(self.theme.accent)
-                .corner_radius(10)
-                .min_size(vec2(34.0, 32.0)),
-        )
-    }
+/// "2 h 05 min"
+pub fn duration(s: u64) -> String {
+    let (h, m) = (s / 3600, (s % 3600) / 60);
+    if h > 0 { format!("{h} h {m:02} min") } else { format!("{m} min") }
 }

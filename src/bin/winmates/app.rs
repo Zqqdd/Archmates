@@ -1,4 +1,10 @@
-//! The window: its state (`App`), what clicks ask for (`Action`), and each frame.
+//! Winmates' state (`App`), what clicks ask for (`Action`), and each frame.
+//!
+//! Two windows, like Noctalia's widget and panel:
+//! - the **desktop widget** (the main window, `views/widget.rs`): your friends and who is
+//!   online, pinned to the desktop under your windows (`desktop.rs`);
+//! - the **panel** (`views/panel.rs`), opened on demand from the widget: a conversation,
+//!   adding a friend, or the settings. Closing it leaves the widget on the desktop.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -9,35 +15,34 @@ use std::time::{Duration, Instant};
 use archmates::config::{FriendList, Paths};
 use archmates::service::control as launcher;
 use archmates::service::{FriendState, StateFile, Status};
-use archmates::{chat, ipc, platform, stats, update, voice};
-use eframe::egui::{self, Sense, Vec2, vec2};
+use archmates::voice::{DeskState, DeskStatus};
+use archmates::{chat, ipc, platform, stats, update};
+use eframe::egui;
 
 use crate::instance;
 use crate::pictures::{Picture, load_picture};
 use crate::startup::Background;
 use crate::theme::{self, Theme};
-use crate::widgets::ease_out;
 
-#[derive(Clone, PartialEq)]
+/// What the panel shows.
+#[derive(Clone, PartialEq, Debug)]
 pub enum View {
-    List,
     Chat(String),
+    AddFriend,
     Settings,
 }
 
 /// What a click asks for, applied once the frame is drawn.
 pub enum Action {
     Open(View),
-    Back,
+    ClosePanel,
     Send(String),
     SendFile(String),
     Answer(String, bool),
-    StartRecording,
-    CancelRecording,
-    SendRecording,
-    Play(String, String),
-    StopPlaying,
-    AskDelete(String),
+    /// A voice desk request (record, stop, send, discard, play, stop playing).
+    Voice(ipc::Command),
+    ToggleDelete,
+    DeleteChat(String),
     RemoveFriend(String),
 }
 
@@ -48,31 +53,34 @@ pub struct App {
     pub(crate) show: Arc<AtomicBool>,
     pub(crate) theme: Theme,
     pub(crate) theme_checked: Instant,
+    /// Frosted glass behind the widget (Windows acrylic).
     pub(crate) glass: bool,
-    pub(crate) view: View,
-    /// When the current view appeared, and from which side (for the slide).
-    pub(crate) view_since: f64,
-    pub(crate) view_forward: bool,
+    /// The widget is above your windows until you click elsewhere (after starting Winmates
+    /// again while it runs), else on the desktop under them.
+    pub(crate) raised: bool,
+    pub(crate) panel: Option<View>,
+    pub(crate) panel_since: f64,
+    /// Glass behind the panel: None until tried on its window (it is found once on screen).
+    pub(crate) panel_glass: Option<bool>,
+    pub(crate) panel_tries: u32,
     pub(crate) state: Option<StateFile>,
     pub(crate) messages: Vec<chat::Message>,
     /// Messages already on screen: only new ones get the "arrive" animation.
     pub(crate) seen: HashSet<String>,
     pub(crate) last_reload: Instant,
+    pub(crate) desk: DeskStatus,
+    pub(crate) desk_read: Instant,
     pub(crate) draft: String,
     /// Feedback line under the message field ("sent", errors…), filled by background tasks.
     pub(crate) status: Arc<Mutex<String>>,
-    pub(crate) add_open: bool,
     pub(crate) add_code: String,
     pub(crate) add_nickname: String,
     pub(crate) add_status: String,
     pub(crate) copied_at: Option<Instant>,
     pub(crate) avatars: HashMap<String, Option<egui::TextureHandle>>,
     pub(crate) pictures: HashMap<String, Option<Picture>>,
-    #[cfg(feature = "voice")]
-    pub(crate) recorder: Option<voice::Recorder>,
-    #[cfg(feature = "voice")]
-    pub(crate) player: Option<(String, voice::Player)>,
-    pub(crate) confirm_delete: Option<String>,
+    /// ⚙ in a conversation: "delete it for good?" box.
+    pub(crate) confirm_delete: bool,
     /// Last (friend, unread count) marked as read (see `conversation`).
     pub(crate) marked_read: Option<(String, usize)>,
     pub(crate) autostart: bool,
@@ -89,9 +97,11 @@ impl App {
         show: Arc<AtomicBool>,
     ) -> Self {
         let _ = instance::CTX.set(cc.egui_ctx.clone());
+        theme::install_fonts(&cc.egui_ctx);
         let theme = Theme::detect();
         theme.apply(&cc.egui_ctx);
         let glass = theme::glass(cc, &theme);
+        crate::desktop::pin(cc);
         let paths = Paths::detect();
         let mut app = Self {
             share_stats: stats::sharing_enabled(&paths),
@@ -103,27 +113,26 @@ impl App {
             theme,
             theme_checked: Instant::now(),
             glass,
-            view: View::List,
-            view_since: 0.0,
-            view_forward: true,
+            raised: false,
+            panel: None,
+            panel_since: 0.0,
+            panel_glass: None,
+            panel_tries: 0,
             state: None,
             messages: Vec::new(),
             seen: HashSet::new(),
             last_reload: Instant::now() - Duration::from_secs(60),
+            desk: DeskStatus::default(),
+            desk_read: Instant::now() - Duration::from_secs(60),
             draft: String::new(),
             status: Arc::new(Mutex::new(String::new())),
-            add_open: false,
             add_code: String::new(),
             add_nickname: String::new(),
             add_status: String::new(),
             copied_at: None,
             avatars: HashMap::new(),
             pictures: HashMap::new(),
-            #[cfg(feature = "voice")]
-            recorder: None,
-            #[cfg(feature = "voice")]
-            player: None,
-            confirm_delete: None,
+            confirm_delete: false,
             marked_read: None,
             autostart: platform::autostart_enabled(),
             settings_status: String::new(),
@@ -168,8 +177,18 @@ impl App {
                 });
             }
         }
-        if let View::Chat(code) = &self.view {
+        if let Some(View::Chat(code)) = &self.panel {
             self.messages = chat::load(&self.paths, code);
+        }
+    }
+
+    /// The voice desk (what the service records or plays): ten times a second while busy.
+    fn read_desk(&mut self) {
+        let busy = self.desk.state != DeskState::Idle || self.desk.playing.is_some();
+        let every = if busy { 100 } else { 500 };
+        if self.desk_read.elapsed() >= Duration::from_millis(every) {
+            self.desk_read = Instant::now();
+            self.desk = DeskStatus::read(&self.paths);
         }
     }
 
@@ -193,39 +212,55 @@ impl App {
         }
     }
 
-    pub(crate) fn go(&mut self, ctx: &egui::Context, view: View, forward: bool) {
+    /// Opens the panel on `view` (or switches it there).
+    pub(crate) fn open(&mut self, ctx: &egui::Context, view: View) {
         if let View::Chat(code) = &view {
             self.messages = chat::load(&self.paths, code);
             // Messages already there don't animate; only the ones arriving from now on.
             self.seen = self.messages.iter().map(|m| m.id.clone()).collect();
             let _ = chat::mark_read(&self.paths, code);
             self.status.lock().unwrap().clear();
+            self.draft.clear();
         }
-        self.view = view;
-        self.view_forward = forward;
-        self.view_since = ctx.input(|i| i.time);
+        if self.panel.is_none() {
+            self.panel_glass = None;
+            self.panel_tries = 0;
+        }
+        if self.panel.as_ref() != Some(&view) {
+            self.panel_since = ctx.input(|i| i.time);
+        }
+        self.confirm_delete = false;
+        self.add_status.clear();
+        self.panel = Some(view);
     }
 
-    /// Runs a command on the service in the background; its answer goes to `status`.
+    /// Runs a command on the service in the background; its answer goes to `status`
+    /// (unless `quiet` and it worked).
     pub(crate) fn send_command(
         &self,
         command: ipc::Command,
         waiting: &str,
         ctx: &egui::Context,
         cleanup: Option<PathBuf>,
+        quiet: bool,
     ) {
         let status = self.status.clone();
-        *status.lock().unwrap() = waiting.to_string();
+        if !waiting.is_empty() {
+            *status.lock().unwrap() = waiting.to_string();
+        }
         let ctx = ctx.clone();
         self.rt.spawn(async move {
             let text = match ipc::request(&command).await {
-                Ok(a) => format!("✔ {}", a.message),
-                Err(e) => format!("✖ {e:#}"),
+                Ok(_) if quiet => None,
+                Ok(a) => Some(format!("✔ {}", a.message)),
+                Err(e) => Some(format!("✖ {e:#}")),
             };
             if let Some(file) = cleanup {
                 let _ = std::fs::remove_file(file);
             }
-            *status.lock().unwrap() = text;
+            if let Some(text) = text {
+                *status.lock().unwrap() = text;
+            }
             ctx.request_repaint();
         });
     }
@@ -235,7 +270,8 @@ impl App {
         self.avatars
             .entry(path.to_string())
             .or_insert_with(|| {
-                let img = image::open(path).ok()?;
+                // Saved without an extension: the format is read from the file itself.
+                let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
                 let img = img.resize_to_fill(128, 128, image::imageops::FilterType::Triangle).to_rgba8();
                 let color = egui::ColorImage::from_rgba_unmultiplied([128, 128], img.as_raw());
                 Some(ctx.load_texture(format!("avatar:{path}"), color, egui::TextureOptions::LINEAR))
@@ -255,9 +291,24 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.show.swap(false, Ordering::SeqCst) {
+            // Started again while running: the widget comes above your windows until you
+            // click elsewhere.
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.raised = true;
+        } else if self.raised && ctx.input(|i| i.viewport().focused) == Some(false) {
+            self.raised = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(crate::desktop::WIDGET_LEVEL));
+        }
+        let asked = instance::OPEN.lock().unwrap().take();
+        if let Some(who) = asked {
+            let wanted = who.to_lowercase();
+            let friend = self.friends().into_iter().find(|f| f.code == who || f.nickname.to_lowercase() == wanted);
+            if let Some(f) = friend {
+                self.open(ctx, View::Chat(f.code));
+            }
         }
         if self.theme_checked.elapsed() > Duration::from_secs(5) {
             // Colors follow your theme live, like on Linux.
@@ -269,45 +320,15 @@ impl eframe::App for App {
             }
         }
         self.reload(false);
-        ctx.request_repaint_after(Duration::from_secs(2));
-        // "On the page" = the window is the active one and not minimized.
-        let on_page = ctx.input(|i| i.viewport().focused.unwrap_or(true) && !i.viewport().minimized.unwrap_or(false));
-        let now = ctx.input(|i| i.time);
+        self.read_desk();
+        let busy = self.desk.state != DeskState::Idle || self.desk.playing.is_some();
+        ctx.request_repaint_after(Duration::from_millis(if busy { 50 } else { 2000 }));
 
         let mut action: Option<Action> = None;
-        let theme = self.theme;
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-            theme::card(ui, &theme, self.glass);
-            let full = ui.max_rect();
-            egui::Frame::NONE.inner_margin(16).show(ui, |ui| {
-                ui.set_min_size(full.shrink(16.0).size());
-                self.header(ui, ctx, &mut action);
-                // Slide + fade between views.
-                let t = ease_out(((now - self.view_since) / 0.24) as f32);
-                if t < 1.0 {
-                    ctx.request_repaint();
-                }
-                let shift = (1.0 - t) * 26.0 * if self.view_forward { 1.0 } else { -1.0 };
-                let area = ui.available_rect_before_wrap().translate(vec2(shift, 0.0));
-                let mut child = ui
-                    .new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
-                child.set_opacity(t);
-                match self.view.clone() {
-                    View::List => self.list(&mut child, ctx, &mut action),
-                    View::Chat(code) => self.conversation(&mut child, ctx, &code, on_page, &mut action),
-                    View::Settings => self.settings(&mut child, ctx),
-                }
-            });
-            // Resize from the bottom-right corner (the window has no frame).
-            let grip = egui::Rect::from_min_size(full.right_bottom() - vec2(16.0, 16.0), Vec2::splat(16.0));
-            let r = ui
-                .interact(grip, ui.id().with("grip"), Sense::drag())
-                .on_hover_cursor(egui::CursorIcon::ResizeSouthEast);
-            if r.drag_started() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(egui::ResizeDirection::SouthEast));
-            }
-        });
-        self.delete_dialog(ctx);
+        self.desktop_widget(ctx, &mut action);
+        if let Some(view) = self.panel.clone() {
+            self.show_panel(ctx, view, &mut action);
+        }
         if let Some(a) = action {
             self.apply(ctx, a);
         }
@@ -316,22 +337,19 @@ impl eframe::App for App {
 
 impl App {
     pub(crate) fn apply(&mut self, ctx: &egui::Context, action: Action) {
-        let friend_code = match &self.view {
-            View::Chat(c) => Some(c.clone()),
+        let friend_code = match &self.panel {
+            Some(View::Chat(c)) => Some(c.clone()),
             _ => None,
         };
         match action {
-            Action::Open(view) => self.go(ctx, view, true),
-            Action::Back => {
-                #[cfg(feature = "voice")]
-                {
-                    self.recorder = None;
-                }
-                self.go(ctx, View::List, false)
+            Action::Open(view) => self.open(ctx, view),
+            Action::ClosePanel => {
+                // A recording for this friend is kept: the widget shows it again when reopened.
+                self.panel = None;
             }
             Action::Send(text) => {
                 if let Some(to) = friend_code {
-                    self.send_command(ipc::Command::SendMessage { to, text }, "Sending…", ctx, None);
+                    self.send_command(ipc::Command::SendMessage { to, text }, "Sending…", ctx, None, false);
                     self.last_reload = Instant::now() - Duration::from_secs(60);
                 }
             }
@@ -342,71 +360,44 @@ impl App {
                         "Waiting for your friend to accept the file…",
                         ctx,
                         None,
+                        false,
                     );
                 }
             }
             Action::Answer(id, accept) => {
                 let waiting = if accept { "Receiving…" } else { "…" };
-                self.send_command(ipc::Command::AnswerFile { id, accept }, waiting, ctx, None);
+                self.send_command(ipc::Command::AnswerFile { id, accept }, waiting, ctx, None, false);
             }
-            Action::AskDelete(code) => self.confirm_delete = Some(code),
+            Action::Voice(command) => {
+                // Read the desk again right away, so the recorder follows without waiting.
+                self.desk_read = Instant::now() - Duration::from_secs(60);
+                let sending = matches!(command, ipc::Command::VoiceSendRecording);
+                let waiting = if sending { "Sending the voice message…" } else { "" };
+                if !sending {
+                    self.status.lock().unwrap().clear();
+                }
+                self.send_command(command, waiting, ctx, None, !sending);
+            }
+            Action::ToggleDelete => self.confirm_delete = !self.confirm_delete,
+            Action::DeleteChat(code) => {
+                self.confirm_delete = false;
+                let nickname =
+                    self.friends().into_iter().find(|f| f.code == code).map(|f| f.nickname).unwrap_or_default();
+                *self.status.lock().unwrap() = match chat::delete_conversation(&self.paths, &code, &nickname) {
+                    Ok(d) => format!("✔ Conversation deleted ({} messages, {} files)", d.messages, d.files),
+                    Err(e) => format!("✖ {e:#}"),
+                };
+                self.messages.clear();
+                self.pictures.clear();
+            }
             Action::RemoveFriend(code) => {
                 if let Ok(mut list) = FriendList::load(&self.paths) {
                     if list.remove(&code) && list.save(&self.paths).is_ok() {
                         self.reload(true);
-                        self.go(ctx, View::List, false);
+                        self.panel = None;
                     }
                 }
             }
-            #[cfg(feature = "voice")]
-            Action::StartRecording => match voice::Recorder::start() {
-                Ok(r) => {
-                    self.recorder = Some(r);
-                    *self.status.lock().unwrap() = "Recording… (5 min max)".into();
-                }
-                Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
-            },
-            #[cfg(feature = "voice")]
-            Action::CancelRecording => {
-                self.recorder = None;
-                self.status.lock().unwrap().clear();
-            }
-            #[cfg(feature = "voice")]
-            Action::SendRecording => {
-                if let (Some(rec), Some(to)) = (self.recorder.take(), friend_code) {
-                    match rec.finish() {
-                        Ok(wav) => {
-                            let tmp = self.paths.cache.join(format!("recording-{}.wav", archmates::time::now_ms()));
-                            match archmates::config::write_atomic(&tmp, &wav) {
-                                Ok(()) => {
-                                    let path = tmp.to_string_lossy().into_owned();
-                                    self.send_command(
-                                        ipc::Command::SendVoice { to, path },
-                                        "Sending the voice message…",
-                                        ctx,
-                                        Some(tmp),
-                                    );
-                                }
-                                Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
-                            }
-                        }
-                        Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
-                    }
-                }
-            }
-            #[cfg(feature = "voice")]
-            Action::Play(id, path) => match voice::Player::play(Path::new(&path)) {
-                Ok(p) => self.player = Some((id, p)),
-                Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
-            },
-            #[cfg(feature = "voice")]
-            Action::StopPlaying => self.player = None,
-            #[cfg(not(feature = "voice"))]
-            Action::StartRecording
-            | Action::CancelRecording
-            | Action::SendRecording
-            | Action::Play(..)
-            | Action::StopPlaying => {}
         }
     }
 }
@@ -415,8 +406,7 @@ pub(crate) fn add_friend(paths: &Paths, code: &str, nickname: &str) -> anyhow::R
     let nickname = nickname.trim();
     anyhow::ensure!(!nickname.is_empty(), "pick a nickname");
     let mut list = FriendList::load(paths)?;
-    anyhow::ensure!(!list.friends.iter().any(|f| f.nickname == nickname), "you already have a friend named {nickname}");
-    list.add(code, nickname)?;
+    list.add(code.trim(), nickname)?;
     list.save(paths)
 }
 

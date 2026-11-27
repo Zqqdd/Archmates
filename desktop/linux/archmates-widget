@@ -11,6 +11,11 @@ KDE Plasma, niri, river, labwc, Wayfire... (not GNOME).
 Needs: gtk4, gtk4-layer-shell, python-gobject
     sudo pacman -S --needed gtk4 gtk4-layer-shell python-gobject
 
+Frosted glass: the compositor blurs what is behind the widget and the chat panel when it can
+(Hyprland, SwayFX: the rules are added live). Elsewhere the widget blurs your wallpaper itself
+(it sits right on it), and the chat panel, which floats over windows it cannot see, turns
+more opaque instead of pretending.
+
 Colors follow your theme: pywal / wallust colors if you use them, else your GTK theme
 (libadwaita, matugen...). Customise the look further with ~/.config/archmates/widget.css
 (loaded after the default style below), and the position with ~/.config/archmates/widget.toml:
@@ -46,7 +51,9 @@ try:
     gi.require_version("Gdk", "4.0")
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gtk4LayerShell", "1.0")
-    from gi.repository import Gdk, GLib, Gtk
+    gi.require_version("Gsk", "4.0")
+    gi.require_version("Graphene", "1.0")
+    from gi.repository import Gdk, GLib, Graphene, Gsk, Gtk
     from gi.repository import Gtk4LayerShell as LayerShell
 except (ImportError, ValueError) as err:
     sys.exit(
@@ -63,13 +70,18 @@ WIDTH = 300
 # Colors come from @bg, @fg and @accent, filled in from the user's theme (see theme_colors).
 DEFAULT_CSS = """
 window.archmates { background: transparent; }
+/* Glass: tinted surface over the blur, a soft light from the top edge, a thin bright rim. */
 .card {
   background-color: alpha(@bg, 0.35);
+  background-image: linear-gradient(to bottom, alpha(white, 0.07), alpha(white, 0.0) 45%);
   border: 1px solid alpha(@fg, 0.28);
+  box-shadow: inset 0 1px alpha(white, 0.10);
   border-radius: 18px;
   padding: 16px;
   color: @fg;
 }
+/* No blur from the compositor: the widget paints its own frosted wallpaper (see Frost). */
+.card.self-frosted { background-color: transparent; background-image: none; }
 .title { font-family: monospace; font-weight: bold; font-size: 14px; color: @accent; }
 .count { font-family: monospace; font-size: 11px; opacity: 0.75; }
 .nickname { font-weight: 600; }
@@ -87,30 +99,42 @@ separator { background-color: alpha(@fg, 0.18); min-height: 1px; }
 button.copy { font-size: 11px; padding: 2px 10px; border-radius: 10px;
   background: alpha(@fg, 0.08); border: none; color: inherit; box-shadow: none; }
 button.copy:hover { background: alpha(@fg, 0.18); }
+/* Like the Noctalia widget's "Copy my code": no background until hovered. */
+button.quiet { font-size: 12px; padding: 0 10px; min-height: 30px; border-radius: 8px;
+  background: transparent; border: none; box-shadow: none; color: inherit; }
+button.quiet:hover { background: alpha(@fg, 0.10); }
 window.archmates-chat { background: transparent; }
 /* Same look as the Noctalia friend panel; translucent so the compositor blurs behind it */
-.chat-card { background-color: alpha(@bg, 0.72); border: 1px solid alpha(@fg, 0.22); border-radius: 20px; padding: 16px; }
+.chat-card { background-color: alpha(@bg, 0.58); border: 1px solid alpha(@fg, 0.22); border-radius: 20px; padding: 16px; }
+/* Over windows without blur: more opaque rather than a fake glass. */
+.chat-card.no-blur { background-color: alpha(@bg, 0.94); }
 .chat-name { font-size: 17px; font-weight: bold; }
 .avatar-big { border-radius: 26px; }
 .stat-name { font-size: 11px; opacity: 0.75; }
 .stat-value { font-size: 11px; }
 .stat-pct { font-size: 11px; font-weight: bold; color: @accent; }
-levelbar trough { min-height: 5px; border-radius: 3px; background: alpha(@fg, 0.15); }
-levelbar block { min-height: 5px; border-radius: 3px; }
+levelbar trough { min-height: 5px; padding: 0; border: none; border-radius: 3px; background: alpha(@fg, 0.15); }
+levelbar block, levelbar.horizontal trough > block { min-height: 5px; margin: 0; border: none; border-radius: 3px; }
+levelbar { min-height: 5px; }
 .bubble-text { font-size: 13px; }
 .empty { font-size: 12px; opacity: 0.7; margin: 4px; }
-button.ghost { background: transparent; border: none; box-shadow: none; color: inherit; border-radius: 10px; min-width: 32px; min-height: 32px; }
+button.ghost { background: transparent; border: none; box-shadow: none; color: inherit; border-radius: 8px;
+  min-width: 32px; min-height: 32px; padding: 0; }
 button.ghost:hover { background: alpha(@fg, 0.10); }
-button.send { background: @accent; color: @bg; border: none; box-shadow: none; border-radius: 10px; min-width: 34px; min-height: 34px; }
-entry.chat-entry { min-height: 34px; border-radius: 10px; border: 1px solid alpha(@fg, 0.25); background: alpha(@bg, 0.35); padding: 0 10px; }
+/* Sizes as in the Noctalia panel: 32 px buttons, a 34 px field. */
+button.send { background: @accent; color: @bg; border: none; box-shadow: none; border-radius: 8px;
+  min-width: 32px; min-height: 32px; padding: 0; }
+button.send:hover { background: mix(@accent, @fg, 0.12); }
+entry.chat-entry { min-height: 32px; border-radius: 10px; border: 1px solid alpha(@fg, 0.25); background: alpha(@bg, 0.45);
+  padding: 0 10px; box-shadow: none; outline: none; }
 entry.chat-entry:focus-within { border-color: @accent; }
 .chat-image { border-radius: 8px; transition: filter 150ms ease; }
 /* Pictures are blurred while the chat panel is not the active window. */
 .chat-image.blurred { filter: blur(18px); }
 .offer { padding: 10px; border-radius: 12px; background-color: alpha(@accent, 0.15); }
 button.accept { background: alpha(@accent, 0.45); }
-.bubble { padding: 8px 10px; border-radius: 12px; }
-.bubble.mine { background-color: alpha(@accent, 0.25); }
+.bubble { padding: 8px; border-radius: 12px; }
+.bubble.mine { background-color: alpha(@accent, 0.22); }
 .bubble.theirs { background-color: alpha(@fg, 0.10); }
 .time { font-size: 9px; opacity: 0.6; }
 .friend-row { transition: background-color 150ms ease, margin 150ms ease; border-radius: 10px; }
@@ -125,7 +149,13 @@ button { transition: background-color 150ms ease, opacity 150ms ease; }
 .dot.online { animation: archmates-pulse 1.6s ease-in-out infinite alternate; }
 .danger-box { padding: 10px; border-radius: 12px; background-color: alpha(#f2b8b5, 0.15); }
 button.danger { background: alpha(#f2b8b5, 0.45); }
-button.voice { background: @accent; color: @bg; border-radius: 14px; padding: 2px 12px; }
+button.play { background: @accent; color: @bg; border: none; box-shadow: none; border-radius: 14px;
+  min-width: 28px; min-height: 28px; padding: 0; }
+.voice-time { font-size: 11px; opacity: 0.75; }
+.rec-time { font-family: monospace; font-size: 12px; }
+.rec-dot { min-width: 10px; min-height: 10px; border-radius: 5px; background-color: #f2b8b5; }
+.rec-dot { animation: archmates-pulse 0.5s ease-in-out infinite alternate; }
+.error { font-size: 11px; color: #f2b8b5; }
 entry { color: @fg; }
 levelbar block.filled { background-color: @accent; }
 levelbar block.empty { background-color: alpha(@fg, 0.15); }
@@ -175,6 +205,43 @@ def theme_signature():
 
 
 ORDER = {"online": 0, "pending": 1, "offline": 2}
+THEME = dict(FALLBACK)
+
+# The Noctalia panel's icons (Tabler, see scripts/make-icons.py), next to this script or installed.
+ICON_DIRS = (Path(__file__).resolve().parent / "icons", HOME / ".local/share/archmates/icons",
+             Path("/usr/share/archmates/icons"))
+FALLBACK_ICONS = {
+    "send": "mail-send-symbolic", "x": "window-close-symbolic", "paperclip": "mail-attachment-symbolic",
+    "microphone": "audio-input-microphone-symbolic", "trash": "user-trash-symbolic",
+    "settings": "emblem-system-symbolic", "player-play-filled": "media-playback-start-symbolic",
+    "player-stop-filled": "media-playback-stop-symbolic", "copy": "edit-copy-symbolic",
+    "users": "system-users-symbolic", "user": "avatar-default-symbolic",
+}
+
+
+def setup_icons():
+    theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+    for d in ICON_DIRS:
+        if d.is_dir():
+            theme.add_search_path(str(d))
+
+
+def icon(name):
+    """Icon name for one of the shared icons (the desktop theme's own if ours are missing)."""
+    theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+    ours = f"archmates-{name}-symbolic"
+    return ours if theme.has_icon(ours) else FALLBACK_ICONS.get(name, "image-missing")
+
+
+def rgb(hex_color, a=1.0):
+    h = hex_color.lstrip("#")
+    return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255, a)
+
+
+def theme_css(c):
+    THEME.update(c)
+    return (f"@define-color bg {c['bg']};\n@define-color fg {c['fg']};\n@define-color accent {c['accent']};\n"
+            + DEFAULT_CSS)
 
 
 def ago(ms: int) -> str:
@@ -253,10 +320,10 @@ def avatar(friend, size=36):
         pic.set_pixel_size(size)
         box.append(pic)
     else:
-        icon = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
-        icon.set_pixel_size(size // 2)
-        icon.set_size_request(size, size)
-        box.append(icon)
+        placeholder = Gtk.Image.new_from_icon_name(icon("user"))
+        placeholder.set_pixel_size(size // 2)
+        placeholder.set_size_request(size, size)
+        box.append(placeholder)
     return box
 
 
@@ -327,6 +394,7 @@ def make_draggable(window, handle, vertical, horizontal, on_end=None):
             v = LayerShell.get_margin(window, vertical) + sign(vertical, dy)
             LayerShell.set_margin(window, horizontal, max(0, int(round(h))))
             LayerShell.set_margin(window, vertical, max(0, int(round(v))))
+            handle.queue_draw()  # a self-frosted card shows another part of the wallpaper
             state["moved"] += abs(dx) + abs(dy)
             state["waiting"] = True
         return GLib.SOURCE_CONTINUE
@@ -352,6 +420,176 @@ def make_draggable(window, handle, vertical, horizontal, on_end=None):
     drag.connect("drag-end", end)
     handle.add_controller(drag)
     handle.set_cursor_from_name("grab")
+
+
+# ── Glass ──────────────────────────────────────────────────────────────────────────────────
+# A real blur needs the compositor: it is the only one that sees what is behind a window.
+# Hyprland and SwayFX can blur layer surfaces on request; others (KDE, niri, river, labwc…)
+# do not offer it to GTK apps. There, the desktop widget, which sits right on the wallpaper,
+# blurs the wallpaper itself, which looks the same; the chat panel just gets more opaque.
+
+def _quiet(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def request_native_blur():
+    """Asks the compositor to blur behind our surfaces. Returns True if it will."""
+    namespaces = ("archmates-widget", "archmates-chat")
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        option = _quiet("hyprctl", "getoption", "decoration:blur:enabled")
+        if "false" in option or "int: 0" in option:
+            return False  # blur turned off in your Hyprland settings
+        for ns in namespaces:
+            lua = (f'hl.layer_rule({{ name = "archmates-live-{ns}", match = {{ namespace = "^{ns}$" }}, '
+                   f'blur = true, ignore_alpha = 0.05 }})')
+            if _quiet("hyprctl", "eval", lua) == "ok":  # hyprland.lua
+                continue
+            # hyprland.conf: the 0.53+ rule syntax, then the older one.
+            if _quiet("hyprctl", "keyword", "layerrule", f"blur on, match:namespace ^{ns}$") == "ok":
+                _quiet("hyprctl", "keyword", "layerrule", f"ignore_alpha 0.05, match:namespace ^{ns}$")
+                continue
+            if _quiet("hyprctl", "keyword", "layerrule", f"blur,^{ns}$") == "ok":
+                _quiet("hyprctl", "keyword", "layerrule", f"ignorealpha 0.05,^{ns}$")
+                continue
+            return False
+        return True
+    if os.environ.get("SWAYSOCK") and shutil.which("swaymsg"):
+        # SwayFX only: plain sway has no blur, and rejects the command.
+        return all(subprocess.run(["swaymsg", "layer_effects", ns, "blur enable"], capture_output=True).returncode == 0
+                   for ns in namespaces)
+    return False
+
+
+def wallpaper_path(connector):
+    """The picture your wallpaper tool shows on this screen (None if unknown)."""
+    candidates = []
+    if shutil.which("noctalia"):
+        candidates.append(_quiet("noctalia", "msg", "wallpaper-get", connector or ""))
+    for tool in ("awww", "swww"):
+        if shutil.which(tool):
+            for line in _quiet(tool, "query").splitlines():
+                if (not connector or line.startswith(connector + ":")) and "image: " in line:
+                    candidates.append(line.split("image: ", 1)[1].strip())
+    if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        for line in _quiet("hyprctl", "hyprpaper", "listactive").splitlines():
+            name, _, path = line.partition(" = ")
+            if path and (not connector or name.strip() in (connector, "")):
+                candidates.append(path.strip())
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            args = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if args and os.path.basename(args[0].decode(errors="ignore")) == "swaybg":
+            args = [a.decode(errors="ignore") for a in args]
+            output = None
+            for i, a in enumerate(args[:-1]):
+                if a in ("-o", "--output"):
+                    output = args[i + 1]
+                if a in ("-i", "--image") and output in (None, "*", connector):
+                    candidates.append(args[i + 1])
+    for ini in (HOME / ".config/waypaper/config.ini",):
+        try:
+            for line in ini.read_text().splitlines():
+                if line.startswith("wallpaper ="):
+                    candidates.append(os.path.expanduser(line.split("=", 1)[1].strip()))
+        except OSError:
+            pass
+    try:
+        for line in (HOME / ".config/plasma-org.kde.plasma.desktop-appletsrc").read_text().splitlines():
+            if line.startswith("Image=file://"):
+                candidates.append(line.removeprefix("Image=file://"))
+    except OSError:
+        pass
+    return next((c for c in candidates if c and os.path.isfile(c)), None)
+
+
+class Frost:
+    """The wallpaper of one screen, blurred once on the GPU (Gsk blur node), then drawn behind
+    the widget card at the card's place on that screen."""
+
+    RADIUS = 28
+
+    def __init__(self):
+        self.path = None
+        self.texture = None
+        self.size = None
+        self.checked = 0.0
+
+    def refresh(self, window, monitor):
+        """Re-reads the wallpaper (at most every 20 s); True if it changed."""
+        if monitor is None or time.time() - self.checked < 20:
+            return False
+        self.checked = time.time()
+        path = wallpaper_path(monitor.get_connector())
+        geo = monitor.get_geometry()
+        size = (geo.width, geo.height)
+        if path == self.path and size == self.size and self.texture is not None:
+            return False
+        self.path, self.size, self.texture = path, size, None
+        renderer = window.get_renderer() if window.get_native() else None
+        if not path or renderer is None:
+            return True
+        try:
+            source = Gdk.Texture.new_from_filename(path)
+        except GLib.Error:
+            return True
+        w, h = size
+        # "Cover" fit, slightly larger than the screen so the blur has no faded edges.
+        pad = self.RADIUS * 2
+        scale = max((w + 2 * pad) / source.get_width(), (h + 2 * pad) / source.get_height())
+        tw, th = source.get_width() * scale, source.get_height() * scale
+        snap = Gtk.Snapshot()
+        snap.push_blur(self.RADIUS)
+        snap.append_texture(source, Graphene.Rect().init((w - tw) / 2, (h - th) / 2, tw, th))
+        snap.pop()
+        node = snap.to_node()
+        if node is not None:
+            self.texture = renderer.render_texture(node, Graphene.Rect().init(0, 0, w, h))
+        return True
+
+    def paint(self, snapshot, widget, x, y, tint):
+        """Draws the frosted wallpaper inside `widget`'s rounded border, as if seen through it."""
+        if self.texture is None:
+            return False
+        w, h = widget.get_width(), widget.get_height()
+        rect = Graphene.Rect().init(1, 1, w - 2, h - 2)  # inside the 1 px border
+        r = Graphene.Size().init(17, 17)
+        snapshot.push_rounded_clip(Gsk.RoundedRect().init(rect, r, r, r, r))
+        snapshot.append_texture(self.texture, Graphene.Rect().init(-x, -y, *self.size))
+        snapshot.append_color(tint, rect)
+        top = Gdk.RGBA()
+        top.parse("rgba(255,255,255,0.07)")
+        clear = Gdk.RGBA()
+        clear.parse("rgba(255,255,255,0)")
+        stops = [Gsk.ColorStop(), Gsk.ColorStop()]
+        stops[0].offset, stops[0].color = 0.0, top
+        stops[1].offset, stops[1].color = 0.45, clear
+        snapshot.append_linear_gradient(rect, Graphene.Point().init(0, 0), Graphene.Point().init(0, h), stops)
+        snapshot.pop()
+        return True
+
+
+class GlassCard(Gtk.Box):
+    """The widget card. When the compositor cannot blur, it draws `Frost` under its content."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.frost = None
+        self.where = None   # () -> (x, y) of the card on its screen
+        self.tint = None
+
+    def do_snapshot(self, snapshot):
+        if self.frost is not None and self.where is not None and self.tint is not None:
+            x, y = self.where()
+            self.frost.paint(snapshot, self, x, y, self.tint)
+        Gtk.Box.do_snapshot(self, snapshot)
+
+
+NATIVE_BLUR = False
 
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
@@ -395,7 +633,7 @@ def stat_bar(name, used, total):
     pct = used / total if total else 0
     top.append(label(f"{round(pct * 100)}%", "stat-pct", xalign=1.0))
     box.append(top)
-    level = Gtk.LevelBar(min_value=0, max_value=1, value=min(pct, 1))
+    level = Gtk.LevelBar(min_value=0, max_value=1, value=min(pct, 1), valign=Gtk.Align.CENTER)
     box.append(level)
     return box
 
@@ -411,6 +649,77 @@ def clear_opaque_region(window):
 
 
 CHAT_W, CHAT_H = 400, 560
+
+# ── Voice messages ─────────────────────────────────────────────────────────────────────────
+# The service records and plays them (its "voice desk") and describes what it does in
+# voice-desk.json; the panel reads it ten times a second and asks through `archmates voice …`.
+# Same recorder as Winmates and the Noctalia panel: record → listen → send.
+DESK = STATE.parent / "voice-desk.json"
+
+
+def load_desk():
+    try:
+        desk = json.loads(DESK.read_text())
+    except (OSError, ValueError):
+        return {"state": "idle"}
+    return desk if time.time() * 1000 - desk.get("ms", 0) < 5000 else {"state": "idle"}
+
+
+def progress_of(desk, msg_id):
+    p = desk.get("playing")
+    if p and p.get("id") == msg_id:
+        return min(1.0, max(0.0, p["position"] / max(p["secs"], 0.1)))
+    return None
+
+
+def mmss(secs):
+    secs = int(secs or 0)
+    return f"{secs // 60}:{secs % 60:02d}"
+
+
+class Waveform(Gtk.DrawingArea):
+    """The same waveform as in Winmates and the Noctalia panel (bar heights come from the
+    message time), filling up with the accent color while it plays."""
+
+    def __init__(self, seed):
+        super().__init__()
+        self.seed = seed % 4294967296
+        self.progress = 0.0
+        self.set_content_width(130)
+        self.set_content_height(24)
+        self.set_valign(Gtk.Align.CENTER)
+        self.set_draw_func(self.draw)
+
+    def set_progress(self, progress):
+        if progress != self.progress:
+            self.progress = progress
+            self.queue_draw()
+
+    def draw(self, _area, cr, width, height):
+        cr.set_line_width(2.5)
+        for i in range(26):
+            x = 1.25 + i * (width / 26)
+            h = 5 + (((i * 2654435761 + self.seed) % 4294967296) >> 27) * 0.55
+            done = i / 26 < self.progress
+            cr.set_source_rgba(*(rgb(THEME["accent"]) if done else rgb(THEME["fg"], 0.35)))
+            cr.move_to(x, height / 2 - h / 2)
+            cr.line_to(x, height / 2 + h / 2)
+            cr.stroke()
+
+
+def play_button(playing, on_click):
+    button = Gtk.Button(icon_name=icon("player-stop-filled") if playing else icon("player-play-filled"),
+                        tooltip_text="Stop" if playing else "Play", valign=Gtk.Align.CENTER)
+    button.add_css_class("play")
+    button.connect("clicked", lambda _b: on_click())
+    return button
+
+
+def ghost_button(icon, tooltip, on_click):
+    button = Gtk.Button(icon_name=icon, tooltip_text=tooltip, valign=Gtk.Align.CENTER)
+    button.add_css_class("ghost")
+    button.connect("clicked", lambda _b: on_click())
+    return button
 
 
 class FriendWindow(Gtk.Window):
@@ -442,6 +751,8 @@ class FriendWindow(Gtk.Window):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         root.add_css_class("card")
         root.add_css_class("chat-card")
+        if not NATIVE_BLUR:
+            root.add_css_class("no-blur")
         root.set_size_request(CHAT_W, CHAT_H)
         self.set_default_size(CHAT_W, CHAT_H)
         self.set_child(root)
@@ -460,19 +771,26 @@ class FriendWindow(Gtk.Window):
         root.append(self.scroller)
 
         bottom = Gtk.Box(spacing=6)
-        attach = Gtk.Button(icon_name="mail-attachment-symbolic", tooltip_text="Send a file")
-        attach.add_css_class("ghost")
-        attach.connect("clicked", lambda _b: self.pick_file())
-        bottom.append(attach)
+        bottom.append(ghost_button(icon("paperclip"), "Send a file", self.pick_file))
+        bottom.append(ghost_button(icon("microphone"), "Record a voice message (5 min max)",
+                                   lambda: self.voice(["record", self.code], quiet=True)))
         self.entry = Gtk.Entry(hexpand=True, placeholder_text="Message…")
         self.entry.add_css_class("chat-entry")
         self.entry.connect("activate", lambda _e: self.send_message())
         bottom.append(self.entry)
-        send = Gtk.Button(icon_name="mail-send-symbolic")
+        send = Gtk.Button(icon_name=icon("send"), tooltip_text="Send")
         send.add_css_class("send")
         send.connect("clicked", lambda _b: self.send_message())
         bottom.append(send)
-        root.append(bottom)
+        # The message field, or the recorder while recording / listening for this friend.
+        self.composer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=150)
+        self.composer.add_named(bottom, "compose")
+        self.recorder = Gtk.Box(spacing=6)
+        self.composer.add_named(self.recorder, "voice")
+        root.append(self.composer)
+        self.desk = {"state": "idle"}
+        self.desk_key = None
+        self.waves = {}     # message id → (Waveform, play button holder)
         self.status = label("", "subtitle")
         root.append(self.status)
 
@@ -484,6 +802,90 @@ class FriendWindow(Gtk.Window):
         self.fetching = False
         self.refresh()
         GLib.timeout_add_seconds(3, self.refresh)
+        self.closed = False
+        self.connect("close-request", lambda _w: setattr(self, "closed", True) or False)
+        GLib.timeout_add(100, self.tick_desk)
+
+    # ── Voice ──
+
+    def voice(self, args, quiet=False):
+        if not quiet:
+            self.status.set_text("…")
+
+        def worker():
+            r = subprocess.run([ARCHMATES, "voice", *args], capture_output=True, text=True)
+            out = (r.stdout if r.returncode == 0 else (r.stderr or r.stdout)).strip()
+            text = out.lstrip("✓■●▶ ") if r.returncode == 0 else "Error: " + out.removeprefix("Error: ")
+            show = (not quiet or r.returncode != 0) and text
+            GLib.idle_add(lambda: (show and self.status.set_text(text.splitlines()[-1]), self.tick_desk(),
+                                   self.refresh(), False)[-1])
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def tick_desk(self):
+        if self.closed:
+            return False
+        self.desk = load_desk()
+        mine = self.desk.get("state") != "idle" and self.desk.get("to") == self.code
+        playing = self.desk.get("playing") or {}
+        key = (mine and self.desk.get("state"), playing.get("id"), self.desk.get("error"))
+        if key != self.desk_key:
+            self.desk_key = key
+            self.build_recorder(mine)
+            for msg_id, (wave, holder) in self.waves.items():
+                self.set_play_button(holder, msg_id, wave)
+        for msg_id, (wave, _holder) in self.waves.items():
+            wave.set_progress(progress_of(self.desk, msg_id) or 0.0)
+        if mine and self.desk.get("state") == "recording":
+            self.rec_time.set_text(f"{mmss(self.desk.get('secs'))} / 5:00")
+            self.rec_level.set_value(min(1.0, (self.desk.get("level") or 0) * 1.6))
+        elif mine:
+            self.draft_wave.set_progress(progress_of(self.desk, "draft") or 0.0)
+        return True
+
+    def build_recorder(self, mine):
+        while (child := self.recorder.get_first_child()) is not None:
+            self.recorder.remove(child)
+        self.composer.set_visible_child_name("voice" if mine else "compose")
+        if not mine:
+            return
+        send = Gtk.Button(icon_name=icon("send"), tooltip_text="Send the voice message")
+        send.add_css_class("send")
+        send.connect("clicked", lambda _b: self.desk.get("state") != "sending" and (
+            self.status.set_text("Sending the voice message…"), self.voice(["send-recording"]))[-1])
+        if self.desk.get("state") == "recording":
+            self.recorder.append(ghost_button(icon("x"), "Cancel", lambda: self.voice(["discard"], True)))
+            dot = Gtk.Box(valign=Gtk.Align.CENTER)
+            dot.add_css_class("rec-dot")
+            self.recorder.append(dot)
+            self.rec_time = label("0:00 / 5:00", "rec-time")
+            self.recorder.append(self.rec_time)
+            self.rec_level = Gtk.LevelBar(min_value=0, max_value=1, hexpand=True, valign=Gtk.Align.CENTER)
+            self.recorder.append(self.rec_level)
+            self.recorder.append(ghost_button(icon("player-stop-filled"), "Stop and listen",
+                                              lambda: self.voice(["stop"], True)))
+        else:
+            self.recorder.append(ghost_button(icon("trash"), "Discard",
+                                              lambda: self.desk.get("state") != "sending" and self.voice(["discard"], True)))
+            playing = progress_of(self.desk, "draft") is not None
+            self.recorder.append(play_button(playing, lambda: self.voice(
+                ["stop-playing"] if playing else ["play", "--no-wait"], True)))
+            self.draft_wave = Waveform(0)
+            self.recorder.append(self.draft_wave)
+            length = label(mmss(self.desk.get("secs")), "voice-time")
+            length.set_hexpand(True)
+            self.recorder.append(length)
+            if self.desk.get("error"):
+                self.status.set_text("Error: " + self.desk["error"])
+        self.recorder.append(send)
+
+    def set_play_button(self, holder, msg_id, wave):
+        while (child := holder.get_first_child()) is not None:
+            holder.remove(child)
+        playing = progress_of(self.desk, msg_id) is not None
+        path = wave.path
+        holder.append(play_button(playing, lambda: self.voice(
+            ["stop-playing"] if playing else ["play", path, "--id", msg_id, "--no-wait"], True)))
 
     def friend(self):
         for f in (load_state() or {}).get("friends", []):
@@ -551,6 +953,7 @@ class FriendWindow(Gtk.Window):
             return True
         p = f.get("profile") or {}
         self.set_title(f"Archmates — {f.get('nickname')}")
+        self.entry.set_placeholder_text(f"Message {f.get('nickname')}…")
         top = Gtk.Box(spacing=12)
         top.append(avatar(f, 52))
         col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.CENTER)
@@ -567,11 +970,11 @@ class FriendWindow(Gtk.Window):
                           else f"last seen {ago(f['last_seen_ms'])}" if f.get("last_seen_ms") else "offline", "subtitle"))
         col.append(line)
         top.append(col)
-        gear = Gtk.Button(icon_name="emblem-system-symbolic", valign=Gtk.Align.START, tooltip_text="Delete conversation")
+        gear = Gtk.Button(icon_name=icon("settings"), valign=Gtk.Align.START, tooltip_text="Delete conversation")
         gear.add_css_class("ghost")
         gear.connect("clicked", lambda _b: self.toggle_delete())
         top.append(gear)
-        close = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START)
+        close = Gtk.Button(icon_name=icon("x"), valign=Gtk.Align.START, tooltip_text="Close")
         close.add_css_class("ghost")
         close.connect("clicked", lambda _b: self.close())
         top.append(close)
@@ -612,6 +1015,7 @@ class FriendWindow(Gtk.Window):
             while (child := self.messages.get_first_child()) is not None:
                 self.messages.remove(child)
             self.pictures = []
+            self.waves = {}
             if not messages:
                 self.messages.append(label("No messages yet. Say hi!", "empty"))
             for index, m in enumerate(messages):
@@ -641,16 +1045,22 @@ class FriendWindow(Gtk.Window):
         return False
 
     def voice_widget(self, m):
-        """Voice messages: a play button while the recording exists (until the next restart)."""
-        secs = m.get("voice") or 0
-        length = f"{secs // 60}:{secs % 60:02d}"
+        """A voice message: play / stop, waveform, length (until the next restart)."""
+        length = mmss(m.get("voice"))
         path = m.get("file")
         if not path or not os.path.exists(path):
             return label(f"🎤 Voice message · {length} · expired", "subtitle")
-        button = Gtk.Button(label=f"▶  Voice message · {length}")
-        button.add_css_class("voice")
-        button.connect("clicked", lambda _b: subprocess.Popen([ARCHMATES, "voice", "play", path]))
-        return button
+        row = Gtk.Box(spacing=8)
+        holder = Gtk.Box(valign=Gtk.Align.CENTER)
+        wave = Waveform(m.get("ms", 0))
+        wave.path = path
+        wave.set_progress(progress_of(self.desk, m["id"]) or 0.0)
+        self.waves[m["id"]] = (wave, holder)
+        self.set_play_button(holder, m["id"], wave)
+        row.append(holder)
+        row.append(wave)
+        row.append(label(length, "voice-time"))
+        return row
 
     def toggle_delete(self):
         self.confirm_delete = not self.confirm_delete
@@ -726,8 +1136,18 @@ class Widget(Gtk.ApplicationWindow):
             LayerShell.set_anchor(self, edge, True)
             LayerShell.set_margin(self, edge, int(margin))
 
-        self.card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.card = GlassCard(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.card.add_css_class("card")
+        self.monitor, self.vertical, self.horizontal = monitor, vertical, horizontal
+        if not NATIVE_BLUR:
+            self.card.add_css_class("self-frosted")
+            self.card.frost = Frost()
+            self.card.where = self.card_position
+            # Placed from the screen edges (ignoring panels' reserved space), so the card knows
+            # exactly which part of the wallpaper is under it.
+            LayerShell.set_exclusive_zone(self, -1)
+            # The wallpaper is blurred by the window's renderer, which exists once it is shown.
+            self.connect("map", lambda _w: GLib.idle_add(self.frost_now))
         self.card.set_size_request(WIDTH, -1)
         self.set_child(self.card)
         self.position = pos
@@ -738,6 +1158,22 @@ class Widget(Gtk.ApplicationWindow):
         self.signature = None
         self.refresh()
         GLib.timeout_add_seconds(REFRESH_SECONDS, self.refresh)
+
+    def frost_now(self):
+        self.card.frost.checked = 0
+        if self.card.frost.refresh(self, self.monitor):
+            self.card.queue_draw()
+        return False
+
+    def card_position(self):
+        """Where the card is on its screen (for the self-frosted glass)."""
+        geo = self.monitor.get_geometry() if self.monitor is not None else None
+        if geo is None:
+            return (0, 0)
+        mx, my = LayerShell.get_margin(self, self.horizontal), LayerShell.get_margin(self, self.vertical)
+        x = mx if self.horizontal == LayerShell.Edge.LEFT else geo.width - mx - self.get_width()
+        y = my if self.vertical == LayerShell.Edge.TOP else geo.height - my - self.get_height()
+        return (x, y)
 
     def save_position(self, margin_y, margin_x):
         """Remembers where you dragged the widget (in ~/.config/archmates/widget.toml)."""
@@ -752,12 +1188,16 @@ class Widget(Gtk.ApplicationWindow):
             return
         self.signature = signature
         c = theme_colors(self)
-        self.css.load_from_string(
-            f"@define-color bg {c['bg']};\n@define-color fg {c['fg']};\n@define-color accent {c['accent']};\n"
-            + DEFAULT_CSS)
+        self.css.load_from_string(theme_css(c))
+        tint = Gdk.RGBA()
+        tint.parse(c["bg"])
+        tint.alpha = 0.35
+        self.card.tint = tint
 
     def refresh(self):
         self.apply_theme()
+        if self.card.frost is not None and self.card.frost.refresh(self, self.monitor):
+            self.card.queue_draw()
         while (child := self.card.get_first_child()) is not None:
             self.card.remove(child)
         state = load_state()
@@ -765,9 +1205,9 @@ class Widget(Gtk.ApplicationWindow):
         online = sum(1 for f in friends if f.get("status") == "online")
 
         header = Gtk.Box(spacing=8)
-        icon = Gtk.Image.new_from_icon_name("system-users-symbolic")
-        icon.add_css_class("title")
-        header.append(icon)
+        users = Gtk.Image.new_from_icon_name(icon("users"))
+        users.add_css_class("title")
+        header.append(users)
         title = label("Archmates", "title")
         title.set_hexpand(True)
         header.append(title)
@@ -792,8 +1232,12 @@ class Widget(Gtk.ApplicationWindow):
             for f in sorted(friends, key=lambda f: (ORDER.get(f.get("status"), 3), f.get("nickname", "").lower())):
                 self.card.append(friend_row(f))
 
-        button = Gtk.Button(label="Copy my code", halign=Gtk.Align.END)
-        button.add_css_class("copy")
+        button = Gtk.Button(halign=Gtk.Align.END)
+        content = Gtk.Box(spacing=6)
+        content.append(Gtk.Image.new_from_icon_name(icon("copy")))
+        content.append(Gtk.Label(label="Copy my code"))
+        button.set_child(content)
+        button.add_css_class("quiet")
         button.connect("clicked", lambda _b: copy_to_clipboard(me.get("code", "")))
         self.card.append(button)
         return True
@@ -812,9 +1256,11 @@ def open_friend(code):
 
 
 def on_activate(app):
-    global APP
+    global APP, NATIVE_BLUR
     APP = app
+    NATIVE_BLUR = "--no-native-blur" not in sys.argv and request_native_blur()
     display = Gdk.Display.get_default()
+    setup_icons()
     user_css = CONFIG_DIR / "widget.css"
     if user_css.exists():
         custom = Gtk.CssProvider()
@@ -828,8 +1274,7 @@ def on_activate(app):
             return
         css = Gtk.CssProvider()
         probe = Gtk.Window()
-        c = theme_colors(probe)
-        css.load_from_string(f"@define-color bg {c['bg']};\n@define-color fg {c['fg']};\n@define-color accent {c['accent']};\n" + DEFAULT_CSS)
+        css.load_from_string(theme_css(theme_colors(probe)))
         Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         win = FriendWindow(app, sys.argv[i + 1])
         win.connect("close-request", lambda _w: (app.quit(), False)[-1])

@@ -54,6 +54,7 @@ struct Setup {
 impl Setup {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let theme = Theme::detect();
+        theme::install_fonts(&cc.egui_ctx);
         theme.apply(&cc.egui_ctx);
         let glass = theme::glass(cc, &theme);
         Self { theme, glass, step: Step::Welcome, autostart: true, desktop: false, shown_at: -1.0 }
@@ -108,7 +109,7 @@ impl eframe::App for Setup {
                 ui.horizontal(|ui| {
                     theme::title(ui, &theme, "winmates");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::icon_button(ui, &theme, theme::Icon::Close, "Close", false).clicked() {
+                        if theme::icon_button(ui, &theme, theme::icons::X, "Close", theme::Look::Quiet).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
