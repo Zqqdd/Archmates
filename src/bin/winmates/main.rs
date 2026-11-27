@@ -45,7 +45,7 @@ fn main() {
 
     #[cfg(windows)]
     {
-        platform::cleanup_old_programs();
+        archmates::platform::cleanup_old_programs();
         if let Some(installed) = install::self_install() {
             relaunch(&installed);
         }
