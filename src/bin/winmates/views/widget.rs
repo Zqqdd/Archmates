@@ -18,7 +18,17 @@ impl App {
     pub(crate) fn desktop_widget(&mut self, ctx: &egui::Context, action: &mut Option<Action>) {
         let theme = self.theme;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-            theme::card(ui, &theme, self.glass);
+            // The glass: the blurred wallpaper, then the card, rounded like Noctalia's (18 px).
+            if let Some(hwnd) = self.widget_hwnd {
+                if self.backdrop.as_mut().is_some_and(|b| b.outdated(hwnd)) {
+                    self.backdrop = crate::backdrop::Backdrop::load(ctx, hwnd);
+                    self.glass = self.backdrop.is_some();
+                }
+                if let Some(b) = &self.backdrop {
+                    b.paint(ui, ui.max_rect(), hwnd, 18.0);
+                }
+            }
+            theme::card(ui, &theme, self.glass, 18);
             // Move the widget by dragging its card. Registered first, so every button and
             // friend row drawn on top of it still gets its clicks.
             let drag = ui.interact(ui.max_rect(), ui.id().with("widget-drag"), Sense::drag());
@@ -95,14 +105,22 @@ impl App {
             ui.spacing_mut().item_spacing.y = 10.0;
         }
 
-        // Add a friend and settings (Windows has no command line for them), then your code.
+        // Your code, as on Noctalia. Add a friend and settings (Windows has no command line for
+        // them) only show while the pointer is on the widget, so at rest it looks the same.
+        let on_widget = ctx.input(|i| i.pointer.hover_pos().is_some());
+        let shown = ctx.animate_bool_with_time(ui.id().with("widget-tools"), on_widget, 0.15);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if theme::icon_button(ui, &theme, icons::USER_PLUS, "Add a friend", Look::Quiet).clicked() {
-                *action = Some(Action::Open(View::AddFriend));
-            }
-            if theme::icon_button(ui, &theme, icons::SETTINGS, "Settings", Look::Quiet).clicked() {
-                *action = Some(Action::Open(View::Settings));
+            if shown > 0.0 {
+                ui.scope(|ui| {
+                    ui.multiply_opacity(shown);
+                    if theme::icon_button(ui, &theme, icons::USER_PLUS, "Add a friend", Look::Quiet).clicked() {
+                        *action = Some(Action::Open(View::AddFriend));
+                    }
+                    if theme::icon_button(ui, &theme, icons::SETTINGS, "Settings", Look::Quiet).clicked() {
+                        *action = Some(Action::Open(View::Settings));
+                    }
+                });
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let copied = self.copied_at.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));

@@ -98,7 +98,7 @@ impl eframe::App for Setup {
         }
         let theme = self.theme;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-            theme::card(ui, &theme, self.glass);
+            theme::card(ui, &theme, self.glass, if self.glass { 8 } else { 18 });
             // Drag the window by its background.
             let bg = ui.interact(ui.max_rect(), ui.id().with("drag"), egui::Sense::drag());
             if bg.drag_started() {

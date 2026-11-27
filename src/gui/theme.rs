@@ -261,7 +261,7 @@ pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let Ok(handle) = cc.window_handle() else { return false };
         match handle.as_raw() {
-            RawWindowHandle::Win32(h) => glass_hwnd(h.hwnd.get(), theme),
+            RawWindowHandle::Win32(h) => glass_hwnd(h.hwnd.get(), theme, None),
             _ => false,
         }
     }
@@ -275,9 +275,11 @@ pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
 /// The same glass on any window of this program, by its handle (used for the friend panel,
 /// whose handle eframe does not give out: it is found by its title).
 #[cfg(windows)]
-pub fn glass_hwnd(hwnd: isize, theme: &Theme) -> bool {
+pub fn glass_hwnd(hwnd: isize, theme: &Theme, luminosity: Option<Color32>) -> bool {
     use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
-    use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
     struct Hwnd(std::num::NonZeroIsize);
     impl HasWindowHandle for Hwnd {
         fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
@@ -287,39 +289,120 @@ pub fn glass_hwnd(hwnd: isize, theme: &Theme) -> bool {
     }
     let Some(handle) = std::num::NonZeroIsize::new(hwnd) else { return false };
     let pref = DWMWCP_ROUND;
+    // Windows draws its border over the window's edge: it gets the card's rim color (Noctalia's
+    // on_surface_variant/0.55), so the rim follows Windows' rounded corners.
+    let rim = mix(theme.bg, theme.fg, 0.42);
+    let rim = rim.r() as u32 | (rim.g() as u32) << 8 | (rim.b() as u32) << 16;
     unsafe {
         DwmSetWindowAttribute(hwnd as _, DWMWA_WINDOW_CORNER_PREFERENCE as _, (&pref as *const i32).cast(), 4);
+        DwmSetWindowAttribute(hwnd as _, DWMWA_BORDER_COLOR as _, (&rim as *const u32).cast(), 4);
     }
-    let tint = (theme.bg.r(), theme.bg.g(), theme.bg.b(), if theme.dark { 110 } else { 90 });
-    window_vibrancy::apply_acrylic(Hwnd(handle), Some(tint)).is_ok()
+    // The "accent" acrylic, not the Windows 11 system backdrop (window_vibrancy's acrylic there):
+    // that one turns to a flat gray whenever the window is not the active one. (The plain accent
+    // blur draws black.) Its tint color, even nearly transparent, sets how bright the acrylic
+    // is: `luminosity`, the wallpaper's average color, makes it about as bright as what is
+    // behind, like the widget's blur; the card then tints both the same way.
+    // A little lighter: the acrylic comes out a bit darker than the color it is given.
+    let base = luminosity.map_or(theme.bg, |c| mix(c, Color32::WHITE, 0.18));
+    let tint = (base.r(), base.g(), base.b(), 1);
+    accent(hwnd, ACCENT_ACRYLIC, tint) || window_vibrancy::apply_acrylic(Hwnd(handle), Some(tint)).is_ok()
+}
+
+#[cfg(windows)]
+const ACCENT_ACRYLIC: u32 = 4;
+
+/// SetWindowCompositionAttribute (undocumented, user32): the "accent" glass of Windows 10,
+/// still there on 11, and unlike the system backdrop it stays on when the window is inactive.
+#[cfg(windows)]
+fn accent(hwnd: isize, state: u32, tint: (u8, u8, u8, u8)) -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+    #[repr(C)]
+    struct Policy {
+        state: u32,
+        flags: u32,
+        color: u32,
+        animation: u32,
+    }
+    #[repr(C)]
+    struct Data {
+        attrib: u32,
+        data: *mut std::ffi::c_void,
+        size: usize,
+    }
+    type Swca = unsafe extern "system" fn(isize, *mut Data) -> i32;
+    unsafe {
+        let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
+        if user32.is_null() {
+            return false;
+        }
+        let Some(f) = GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast()) else {
+            return false;
+        };
+        let swca: Swca = std::mem::transmute(f);
+        let mut policy = Policy {
+            state,
+            flags: 2,
+            color: tint.0 as u32 | (tint.1 as u32) << 8 | (tint.2 as u32) << 16 | (tint.3.max(1) as u32) << 24,
+            animation: 0,
+        };
+        let mut data = Data { attrib: 0x13, data: (&mut policy as *mut Policy).cast(), size: size_of::<Policy>() };
+        swca(hwnd, &mut data) != 0
+    }
 }
 
 /// The card behind everything, like the Noctalia glass (`surface/0.18` and a thin rim): a tint
 /// over the blur, a soft light from the top edge, more opaque when there is no glass behind.
-pub fn card(ui: &mut egui::Ui, theme: &Theme, glass: bool) {
+/// `radius`: the window's own corners when it has glass (0 if Windows rounds it), else 18.
+pub fn card(ui: &mut egui::Ui, theme: &Theme, glass: bool, radius: u8) {
     let rect = ui.max_rect();
-    let (fill, radius) = if glass { (alpha(theme.bg, 0.35), 0) } else { (alpha(theme.bg, 0.94), 18) };
+    // Noctalia's glass: surface/0.18 over the blur.
+    // The same over the widget's own blur and over Windows' acrylic (left untinted for it).
+    let fill = if glass { alpha(theme.bg, 0.22) } else { alpha(theme.bg, 0.94) };
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(radius), fill);
-    // The light: a gradient from the top edge, fading out at 45 % of the height.
-    let top = rect.with_max_y(rect.top() + rect.height() * 0.45);
-    let mut mesh = egui::Mesh::default();
-    let light = alpha(Color32::WHITE, 0.06);
-    mesh.colored_vertex(top.left_top(), light);
-    mesh.colored_vertex(top.right_top(), light);
-    mesh.colored_vertex(top.right_bottom(), Color32::TRANSPARENT);
-    mesh.colored_vertex(top.left_bottom(), Color32::TRANSPARENT);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
     if glass {
-        painter.add(mesh);
+        painter.add(top_light(rect, radius as f32));
     }
     painter.rect_stroke(
         rect,
         CornerRadius::same(radius),
-        Stroke::new(1.0_f32, alpha(theme.fg, 0.28)),
+        // Noctalia's rim: on_surface_variant/0.55.
+        Stroke::new(1.0_f32, alpha(theme.fg, 0.42)),
         egui::StrokeKind::Inside,
     );
+}
+
+/// The card's light: a white gradient from the top edge, fading out at 45 % of the height,
+/// in the card's rounded shape (a square one would light up the transparent corners).
+fn top_light(rect: egui::Rect, radius: f32) -> egui::Mesh {
+    let height = rect.height() * 0.45;
+    let r = radius.min(height).min(rect.width() / 2.0);
+    let bottom = rect.top() + height;
+    let light = |y: f32| alpha(Color32::WHITE, 0.06 * (1.0 - (y - rect.top()) / height).clamp(0.0, 1.0));
+    // The outline, left to right over the top: a convex shape, drawn as a fan from its middle.
+    let mut outline = vec![egui::pos2(rect.left(), bottom)];
+    let corner = |center: egui::Pos2, from: f32, outline: &mut Vec<egui::Pos2>| {
+        for i in 0..=8 {
+            let a = from + i as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
+            outline.push(center + r * egui::vec2(a.cos(), a.sin()));
+        }
+    };
+    corner(egui::pos2(rect.left() + r, rect.top() + r), std::f32::consts::PI, &mut outline);
+    corner(egui::pos2(rect.right() - r, rect.top() + r), -std::f32::consts::FRAC_PI_2, &mut outline);
+    outline.push(egui::pos2(rect.right(), bottom));
+    let mut mesh = egui::Mesh::default();
+    let middle = egui::pos2(rect.center().x, rect.top() + height / 2.0);
+    mesh.colored_vertex(middle, light(middle.y));
+    for p in &outline {
+        mesh.colored_vertex(*p, light(p.y));
+    }
+    let n = outline.len() as u32;
+    for i in 1..n {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    // Closes the fan along the bottom edge.
+    mesh.add_triangle(0, n, 1);
+    mesh
 }
 
 /// The little title, as on the Noctalia widget: users icon + name in monospace, accent color.

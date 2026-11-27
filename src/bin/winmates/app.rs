@@ -53,8 +53,10 @@ pub struct App {
     pub(crate) show: Arc<AtomicBool>,
     pub(crate) theme: Theme,
     pub(crate) theme_checked: Instant,
-    /// Frosted glass behind the widget (Windows acrylic).
+    /// Frosted glass behind the widget: the blurred wallpaper (see backdrop.rs).
     pub(crate) glass: bool,
+    pub(crate) widget_hwnd: Option<isize>,
+    pub(crate) backdrop: Option<crate::backdrop::Backdrop>,
     /// The widget is above your windows until you click elsewhere (after starting Winmates
     /// again while it runs), else on the desktop under them.
     pub(crate) raised: bool,
@@ -100,8 +102,9 @@ impl App {
         theme::install_fonts(&cc.egui_ctx);
         let theme = Theme::detect();
         theme.apply(&cc.egui_ctx);
-        let glass = theme::glass(cc, &theme);
-        crate::desktop::pin(cc);
+        let widget_hwnd = crate::desktop::pin(cc);
+        let backdrop = widget_hwnd.and_then(|h| crate::backdrop::Backdrop::load(&cc.egui_ctx, h));
+        let glass = backdrop.is_some();
         let paths = Paths::detect();
         let mut app = Self {
             share_stats: stats::sharing_enabled(&paths),
@@ -113,6 +116,8 @@ impl App {
             theme,
             theme_checked: Instant::now(),
             glass,
+            widget_hwnd,
+            backdrop,
             raised: false,
             panel: None,
             panel_since: 0.0,

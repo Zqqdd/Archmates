@@ -45,14 +45,14 @@ impl App {
                     .tint(Color32::WHITE.gamma_multiply(faded))
                     .paint_at(ui, rect);
             }
+            // No picture: Noctalia's "user" glyph.
             None => {
-                let letter = f.nickname.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
                 painter.text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    letter,
-                    egui::FontId::proportional(size * 0.42),
-                    alpha(self.theme.fg, 0.8 * faded),
+                    theme::icons::USER,
+                    theme::icon_font(size * 0.5),
+                    self.theme.muted(),
                 );
             }
         }

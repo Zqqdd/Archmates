@@ -19,6 +19,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod backdrop;
 mod desktop;
 #[cfg(windows)]
 mod install;
