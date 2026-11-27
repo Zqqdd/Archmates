@@ -66,7 +66,7 @@ fn process_running(name: &str) -> bool {
 }
 
 /// Name of the Wayland socket to draw on, if a Wayland desktop is running.
-fn wayland_display() -> Option<String> {
+pub fn wayland_display() -> Option<String> {
     if let Ok(d) = std::env::var("WAYLAND_DISPLAY") {
         if !d.is_empty() {
             return Some(d);

@@ -27,6 +27,7 @@ pub(super) async fn check_updates(shared: Arc<Shared>) {
                         &format!("You have {}. Update with: {}", update::CURRENT, update::how_to_update()),
                         None,
                         true,
+                        crate::platform::OnClick::Nothing,
                     );
                     let _ = write_atomic(&marker, latest.as_bytes());
                 }

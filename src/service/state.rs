@@ -56,6 +56,8 @@ pub(super) struct PendingOffer {
     pub(super) friend: EndpointId,
     pub(super) offer: Offer,
     pub(super) answer: tokio::sync::oneshot::Sender<bool>,
+    /// The Accept / Decline notification, closed when the offer is answered elsewhere.
+    pub(super) notification: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,9 +112,24 @@ impl Shared {
     /// Answers a file offer (from the widgets, the CLI or the notification).
     pub(super) fn answer_offer(&self, offer_id: &str, accept: bool) -> bool {
         let found = self.offers.lock().unwrap().remove(offer_id);
-        let ok = found.map(|o| o.answer.send(accept).is_ok()).unwrap_or(false);
+        let ok = match found {
+            Some(o) => {
+                if let Some(n) = o.notification {
+                    crate::platform::close_notification(n);
+                }
+                o.answer.send(accept).is_ok()
+            }
+            None => false,
+        };
         let _ = self.publish();
         ok
+    }
+
+    /// Remembers the notification shown for an offer.
+    pub(super) fn set_offer_notification(&self, offer_id: &str, notification: u32) {
+        if let Some(o) = self.offers.lock().unwrap().get_mut(offer_id) {
+            o.notification = Some(notification);
+        }
     }
 
     pub(super) fn is_friend(&self, id: &EndpointId) -> bool {
@@ -217,7 +234,8 @@ fn notify(f: &FriendState) {
         Some(p) => format!("{}@{} · {}", p.user, p.host, p.distro),
         None => String::new(),
     };
-    crate::platform::notify(&format!("{} is online", f.nickname), &body, f.avatar.as_deref(), false);
+    let open = crate::platform::OnClick::OpenChat(f.code.clone());
+    crate::platform::notify(&format!("{} is online", f.nickname), &body, f.avatar.as_deref(), false, open);
 }
 
 impl Shared {

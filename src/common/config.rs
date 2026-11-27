@@ -129,8 +129,18 @@ impl FriendList {
 
     pub fn add(&mut self, code: &str, nickname: &str) -> Result<()> {
         let id: EndpointId = code.trim().parse().context("this friend code is not valid")?;
+        let nickname = nickname.trim();
+        if nickname.is_empty() {
+            bail!("pick a nickname");
+        }
         if self.by_id().contains_key(&id) {
             bail!("this friend is already in your list");
+        }
+        // Nicknames name the friend everywhere (commands, received-files folder): two friends
+        // with the same one would share a folder, and deleting one conversation would delete
+        // the other friend's files.
+        if self.friends.iter().any(|f| f.nickname.eq_ignore_ascii_case(nickname)) {
+            bail!("you already have a friend named {nickname}: pick another nickname");
         }
         self.friends.push(Friend { nickname: nickname.to_string(), code: id.to_string() });
         Ok(())
@@ -144,12 +154,52 @@ impl FriendList {
 }
 
 /// Writes to a temporary file then renames it: the widget never reads a half-written file.
+/// Each write uses its own temporary name, so two writers of the same file (the service
+/// publishes `state.json` from several tasks) never mix their contents.
 pub fn write_atomic(p: &Path, content: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = p.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = p.with_extension("tmp");
-    fs::write(&tmp, content)?;
-    fs::rename(&tmp, p)?;
+    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = p.with_file_name(format!(".{name}.{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    if let Err(e) = fs::write(&tmp, content).and_then(|_| fs::rename(&tmp, p)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nicknames_are_unique() {
+        let mut list = FriendList::default();
+        let a = SecretKey::generate().public().to_string();
+        let b = SecretKey::generate().public().to_string();
+        list.add(&a, "Alex").unwrap();
+        assert!(list.add(&b, "alex").is_err(), "same nickname, other case");
+        assert!(list.add(&b, "  ").is_err(), "empty nickname");
+        list.add(&b, " Bob ").unwrap();
+        assert_eq!(list.friends[1].nickname, "Bob");
+    }
+
+    #[test]
+    fn atomic_writes_leave_no_temporary_file() {
+        let dir = std::env::temp_dir().join(format!("archmates-atomic-{}", std::process::id()));
+        let file = dir.join("state.json");
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let file = &file;
+                s.spawn(move || write_atomic(file, format!("{{\"n\":{i}}}").as_bytes()).unwrap());
+            }
+        });
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("{\"n\":") && text.ends_with('}'), "never a mix of two writes: {text}");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "temporary files are cleaned up");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

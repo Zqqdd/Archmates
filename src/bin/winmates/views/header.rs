@@ -5,13 +5,20 @@ use eframe::egui::{self, RichText, Sense};
 
 use crate::APP_NAME;
 use crate::app::{Action, App, View};
-use crate::theme::{self};
+use crate::theme::{self, Icon};
 
 impl App {
     pub(crate) fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, action: &mut Option<Action>) {
         let theme = self.theme;
-        let row = ui.horizontal(|ui| {
-            if self.view != View::List && self.ghost(ui, "←", "Back").clicked() {
+        // Drag the window by its header. Registered *before* the buttons so they stay on top:
+        // a drag-only zone above a button makes egui ignore the button's clicks.
+        let zone = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 32.0));
+        let drag = ui.interact(zone, ui.id().with("header-drag"), Sense::drag());
+        if drag.drag_started() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        ui.horizontal(|ui| {
+            if self.view != View::List && theme::icon_button(ui, &theme, Icon::Back, "Back", false).clicked() {
                 *action = Some(Action::Back);
             }
             match &self.view {
@@ -24,10 +31,18 @@ impl App {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.ghost(ui, "✕", "Close (Winmates keeps running in the background)").clicked() {
+                if theme::icon_button(
+                    ui,
+                    &theme,
+                    Icon::Close,
+                    "Close (Winmates keeps running in the background)",
+                    false,
+                )
+                .clicked()
+                {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if self.ghost(ui, "—", "Minimize").clicked() {
+                if theme::icon_button(ui, &theme, Icon::Minimize, "Minimize", false).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
                 if self.view == View::List {
@@ -45,11 +60,6 @@ impl App {
                 }
             });
         });
-        // Drag the window by its header.
-        let drag = ui.interact(row.response.rect, ui.id().with("header-drag"), Sense::drag());
-        if drag.drag_started() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
         ui.add_space(6.0);
     }
 }

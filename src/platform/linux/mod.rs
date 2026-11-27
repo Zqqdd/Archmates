@@ -35,30 +35,115 @@ pub fn open_path(path: &std::path::Path) {
 }
 
 // ── Notifications ───────────────────────────────────────────────────────────
+//
+// Every `notify-send` runs in its own thread and is waited for: a child that is never waited
+// for stays as a zombie process for as long as the service runs.
 
-/// Shows a desktop notification. `urgent` makes it stay longer.
-pub fn notify(title: &str, body: &str, icon: Option<&str>, urgent: bool) {
+/// Shows a desktop notification. `urgent` makes it stay longer. A click runs `on_click`.
+pub fn notify(title: &str, body: &str, icon: Option<&str>, urgent: bool, on_click: super::OnClick) {
     let mut cmd = Command::new("notify-send");
     cmd.args(["-a", "Archmates", "-u", if urgent { "normal" } else { "low" }]);
     if let Some(icon) = icon {
         cmd.args(["-i", icon]);
     }
-    let _ = cmd.arg(title).arg(body).spawn();
+    let clickable = !matches!(on_click, super::OnClick::Nothing);
+    if clickable {
+        // "default" is the action run when the notification itself is clicked.
+        cmd.args(["--wait", "--action=default=Open"]);
+    }
+    cmd.arg(title).arg(body);
+    std::thread::spawn(move || {
+        let Ok(out) = cmd.output() else { return };
+        if clickable && String::from_utf8_lossy(&out.stdout).trim() == "default" {
+            open(&on_click);
+        }
+    });
+}
+
+/// Runs a notification click.
+fn open(on_click: &super::OnClick) {
+    match on_click {
+        super::OnClick::Nothing => {}
+        super::OnClick::OpenPath(path) => {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let _ = Command::new("xdg-open").arg(path).status();
+            });
+        }
+        super::OnClick::OpenChat(code) => open_chat(code),
+    }
+}
+
+/// Opens the conversation with a friend: the Noctalia panel when Noctalia runs, otherwise the
+/// universal widget's chat panel.
+pub fn open_chat(code: &str) {
+    let code = code.to_string();
+    std::thread::spawn(move || {
+        if process_running("noctalia") {
+            // The panel reads which friend to show from this file when it opens.
+            let file = crate::common::config::Paths::detect().cache.join("open-chat");
+            let _ = crate::common::config::write_atomic(
+                &file,
+                format!("{code} {}", crate::common::time::now_ms()).as_bytes(),
+            );
+            let _ = Command::new("noctalia").args(["msg", "panel-open", "archmates/archmates:friend"]).status();
+        } else if let (Some(program), Some(display)) = (widget::program(), widget::wayland_display()) {
+            let _ =
+                Command::new(program).args(["--chat-only", "--friend", &code]).env("WAYLAND_DISPLAY", display).status();
+        }
+    });
 }
 
 /// Notification with Accept / Decline buttons. Blocks until answered; None = no answer.
-pub fn ask(title: &str, body: &str) -> Option<bool> {
-    let out = Command::new("notify-send")
-        .args(["-a", "Archmates", "-u", "critical", "--wait", "--action=accept=Accept", "--action=decline=Decline"])
+/// `on_shown` receives the notification id, to close it if the offer is answered elsewhere.
+pub fn ask(title: &str, body: &str, on_shown: impl FnOnce(u32)) -> Option<bool> {
+    use std::io::BufRead;
+    let mut child = Command::new("notify-send")
+        .args([
+            "-a",
+            "Archmates",
+            "-u",
+            "critical",
+            "-p",
+            "--wait",
+            "--action=accept=Accept",
+            "--action=decline=Decline",
+        ])
         .arg(title)
         .arg(body)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .spawn()
         .ok()?;
-    match String::from_utf8_lossy(&out.stdout).trim() {
+    let mut lines = std::io::BufReader::new(child.stdout.take()?).lines();
+    // With -p, the first line is the notification id, then the chosen action (if any).
+    if let Some(id) = lines.next().and_then(|l| l.ok()).and_then(|l| l.trim().parse().ok()) {
+        on_shown(id);
+    }
+    let action = lines.next().and_then(|l| l.ok()).unwrap_or_default();
+    let _ = child.wait();
+    match action.trim() {
         "accept" => Some(true),
         "decline" => Some(false),
         _ => None,
     }
+}
+
+/// Closes a notification shown earlier (e.g. an Accept / Decline answered from a widget).
+pub fn close_notification(id: u32) {
+    std::thread::spawn(move || {
+        let _ = Command::new("busctl")
+            .args([
+                "--user",
+                "call",
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "CloseNotification",
+                "u",
+                &id.to_string(),
+            ])
+            .output();
+    });
 }
 
 // ── Start with the system: the systemd user service ─────────────────────────

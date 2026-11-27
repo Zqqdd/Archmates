@@ -63,17 +63,22 @@ pub fn received_dir(nickname: &str) -> PathBuf {
     download_dir().join(DOWNLOAD_FOLDER).join(safe_name(nickname))
 }
 
-/// `name`, or `name (2)`, `name (3)`… if it already exists.
-fn free_path(dir: &Path, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
+/// Reserves `name`, or `name (2)`, `name (3)`… by creating it empty: two files with the same
+/// name arriving at the same time each get their own.
+fn reserve_path(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
     let (stem, ext) = match name.rfind('.') {
         Some(i) if i > 0 => (&name[..i], &name[i..]),
         _ => (name, ""),
     };
-    (2..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap()
+    for n in 1.. {
+        let candidate = if n == 1 { dir.join(name) } else { dir.join(format!("{stem} ({n}){ext}")) };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
 }
 
 #[cfg(test)]
@@ -89,6 +94,17 @@ mod tests {
         assert_eq!(safe_name("con.txt"), "_con.txt");
         assert_eq!(safe_name("notes. "), "notes");
         assert_eq!(safe_name(""), "file");
+    }
+
+    #[test]
+    fn two_files_with_the_same_name_both_get_a_place() {
+        let dir = std::env::temp_dir().join(format!("archmates-reserve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = super::reserve_path(&dir, "photo.png").unwrap();
+        let second = super::reserve_path(&dir, "photo.png").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(second.file_name().unwrap(), "photo (2).png");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -165,7 +181,7 @@ impl ProtocolHandler for FileReceiver {
         let paths = Paths::detect();
         let friend = FriendList::load(&paths).ok().and_then(|l| l.by_id().get(&id).cloned());
         let Some(friend) = friend.filter(|_| !paths.is_invisible()) else {
-            connection.close(crate::common::proto::CODE_NOT_FRIEND.into(), b"not a friend");
+            crate::common::proto::refuse(&connection, paths.is_invisible());
             return Ok(());
         };
         match receive(&connection, id, &friend.nickname, &self.on_offer).await {
@@ -208,14 +224,21 @@ async fn receive(
 
     let dir = received_dir(nickname);
     tokio::fs::create_dir_all(&dir).await?;
-    let target = free_path(&dir, &name);
-    let partial = target.with_extension("part");
+    let target = reserve_path(&dir, &name)?;
+    // "photo.png.part", next to the reserved name: unique per transfer.
+    let mut partial = target.clone().into_os_string();
+    partial.push(".part");
+    let partial = PathBuf::from(partial);
     let mut file = tokio::fs::File::create(&partial).await?;
-    let written = tokio::io::copy(&mut (&mut reader).take(header.size), &mut file).await?;
-    file.flush().await?;
-    if written != header.size {
+    let written = tokio::io::copy(&mut (&mut reader).take(header.size), &mut file).await;
+    let _ = file.flush().await;
+    if written.as_ref().ok() != Some(&header.size) {
         let _ = tokio::fs::remove_file(&partial).await;
-        bail!("transfer interrupted ({written} of {} bytes)", header.size);
+        let _ = tokio::fs::remove_file(&target).await;
+        match written {
+            Ok(n) => bail!("transfer interrupted ({n} of {} bytes)", header.size),
+            Err(e) => return Err(e.into()),
+        }
     }
     tokio::fs::rename(&partial, &target).await?;
     send.write_all(b"ok").await?;

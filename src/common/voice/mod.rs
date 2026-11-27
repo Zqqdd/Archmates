@@ -109,7 +109,7 @@ impl ProtocolHandler for VoiceReceiver {
         let paths = Paths::detect();
         let is_friend = FriendList::load(&paths).map(|l| l.by_id().contains_key(&id)).unwrap_or(false);
         if !is_friend || paths.is_invisible() {
-            connection.close(crate::common::proto::CODE_NOT_FRIEND.into(), b"not a friend");
+            crate::common::proto::refuse(&connection, paths.is_invisible());
             return Ok(());
         }
         match receive(&connection, id, &paths).await {
@@ -143,6 +143,8 @@ async fn receive(connection: &Connection, from: EndpointId, paths: &Paths) -> Re
         }
     };
     let id: String = header.id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect();
+    // An empty or odd id would overwrite another voice message from this friend.
+    let id = if id.len() < 8 { crate::common::chat::new_id() } else { id };
     let target = dir(paths).join(format!("{from}-{id}.wav"));
     crate::common::config::write_atomic(&target, &wav)?;
     send.write_all(b"ok").await?;

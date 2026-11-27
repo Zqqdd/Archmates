@@ -29,8 +29,12 @@ impl App {
             ui.label(RichText::new("Friend not found.").color(theme::DANGER));
             return;
         };
-        if on_page && friend.unread > 0 {
+        // Mark as read once per new unread count: `unread` only changes when the service
+        // publishes again (up to 30 s), and writing the file every frame meanwhile is useless.
+        let key = (friend.code.clone(), friend.unread);
+        if on_page && friend.unread > 0 && self.marked_read.as_ref() != Some(&key) {
             let _ = chat::mark_read(&self.paths, &friend.code);
+            self.marked_read = Some(key);
         }
 
         // Picture, name, profile, status, ⚙.
@@ -275,7 +279,7 @@ impl App {
                 *action = Some(Action::SendRecording);
             }
             ui.horizontal(|ui| {
-                if self.ghost(ui, "✕", "Cancel").clicked() {
+                if theme::icon_button(ui, &theme, theme::Icon::Close, "Cancel", false).clicked() {
                     *action = Some(Action::CancelRecording);
                 }
                 let (d, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
@@ -288,7 +292,7 @@ impl App {
                 let level = rec.level();
                 let w = (ui.available_width() - 50.0).max(30.0);
                 self.bar(ui, egui::Id::new("mic-level"), (level * 1.6).min(1.0), w);
-                if self.accent_button(ui, "➤").on_hover_text("Send the voice message").clicked() {
+                if theme::icon_button(ui, &theme, theme::Icon::Send, "Send the voice message", true).clicked() {
                     *action = Some(Action::SendRecording);
                 }
             });
@@ -312,7 +316,9 @@ impl App {
                 .desired_width(ui.available_width() - send_w);
             let field = ui.add(field);
             let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (self.accent_button(ui, "➤").clicked() || enter) && !self.draft.trim().is_empty() {
+            if (theme::icon_button(ui, &theme, theme::Icon::Send, "Send", true).clicked() || enter)
+                && !self.draft.trim().is_empty()
+            {
                 *action = Some(Action::Send(std::mem::take(&mut self.draft)));
                 field.request_focus();
             }

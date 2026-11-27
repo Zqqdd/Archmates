@@ -129,6 +129,30 @@ local function secs(s)
   return string.format("%d:%02d", s // 60, s % 60)
 end
 
+-- Borderless button with a neutral hover background. Noctalia's "ghost" button takes its hover
+-- color from the palette (green in some themes), and buttons have no color option.
+local hovered = {}
+local function quietButton(key, opts)
+  local content = {}
+  if opts.glyph then
+    table.insert(content, ui.glyph({ name = opts.glyph, size = opts.glyphSize or 16, color = opts.color or "on_surface" }))
+  end
+  if opts.text then
+    table.insert(content, ui.label({ text = opts.text, fontSize = opts.fontSize or 12, color = opts.color or "on_surface" }))
+  end
+  return ui.row({
+    key = key, gap = 6, align = "center", justify = "center", radius = 8,
+    paddingH = if opts.text then 10 else 0, minWidth = 32, height = 32,
+    fill = if hovered[key] then "on_surface/0.10" else "on_surface/0.0",
+    tooltip = opts.tooltip,
+    onClick = opts.onClick,
+    onHover = function(state)
+      hovered[key] = state == "true"
+      render()
+    end,
+  }, content)
+end
+
 local function bubble(m)
   local mine = m.dir == "out"
   local text = m.text
@@ -161,7 +185,7 @@ local function offerCard(o)
         fontSize = 12, color = "on_surface", maxWidth = 300 }),
     }),
     ui.row({ gap = 8, justify = "end" }, {
-      ui.button({ text = "Decline", variant = "ghost", controlSize = "sm", onClick = function()
+      quietButton("decline-" .. o.id, { text = "Decline", onClick = function()
         run({ BIN, "decline", o.id })
       end }),
       ui.button({ text = "Accept", variant = "primary", controlSize = "sm", onClick = function()
@@ -197,9 +221,9 @@ function render()
           ui.label({ text = subtitle, fontSize = 11, color = "on_surface_variant" }),
         }),
       }),
-      ui.button({ text = "⚙", variant = "ghost", controlSize = "sm", tooltip = "Delete conversation",
+      quietButton("settings", { glyph = "settings", tooltip = "Delete conversation",
         onClick = function() confirmDelete = not confirmDelete; render() end }),
-      ui.button({ glyph = "x", variant = "ghost", controlSize = "sm", onClick = function() panel.close() end }),
+      quietButton("close", { glyph = "x", tooltip = "Close", onClick = function() panel.close() end }),
     }),
   }
 
@@ -208,8 +232,8 @@ function render()
       ui.label({ text = "Delete your conversation with " .. friend.nickname .. " for good? Every message, voice message and file they sent you is deleted from this PC. This cannot be undone.",
         fontSize = 12, color = "on_surface", maxWidth = 330 }),
       ui.row({ gap = 8, justify = "end" }, {
-        ui.button({ text = "Cancel", variant = "ghost", controlSize = "sm", onClick = function() confirmDelete = false; render() end }),
-        ui.button({ text = "Delete", variant = "primary", controlSize = "sm", onClick = function()
+        quietButton("cancel-delete", { text = "Cancel", onClick = function() confirmDelete = false; render() end }),
+        ui.button({ text = "Delete", variant = "destructive", controlSize = "sm", onClick = function()
           confirmDelete = false
           run({ BIN, "delete-chat", code, "--yes" })
         end }),
@@ -240,7 +264,7 @@ function render()
   table.insert(rows, ui.scroll({ flexGrow = 1, gap = 6, stickToBottom = true }, bubbles))
 
   table.insert(rows, ui.row({ gap = 6, align = "center" }, {
-    ui.button({ glyph = "paperclip", variant = "ghost", tooltip = "Send a file", onClick = pickAndSendFile }),
+    quietButton("attach", { glyph = "paperclip", tooltip = "Send a file", onClick = pickAndSendFile }),
     ui.input({
       key = "msg-" .. inputRev, placeholder = "Message " .. friend.nickname .. "…", flexGrow = 1,
       submitOnEnter = true, focus = true,
@@ -256,8 +280,20 @@ function render()
   panel.render(ui.column({ gap = 12, padding = 16, flexGrow = 1 }, rows))
 end
 
+-- A notification click asks for a friend in ~/.cache/archmates/open-chat ("<code> <ms>").
+local OPEN_CHAT = noctalia.expandPath("~/.cache/archmates/open-chat")
+
+local function requestedFriend()
+  local txt = noctalia.readFile(OPEN_CHAT)
+  if not txt then return nil end
+  noctalia.removeFile(OPEN_CHAT)
+  local wanted, ms = string.match(txt, "^(%S+)%s+(%d+)")
+  if wanted and os.time() * 1000 - tonumber(ms) < 30000 then return wanted end
+  return nil
+end
+
 function onOpen(_context)
-  code = noctalia.state.get("selected")
+  code = requestedFriend() or noctalia.state.get("selected")
   status = nil
   messages = {}
   loadFriend()

@@ -108,7 +108,7 @@ impl eframe::App for Setup {
                 ui.horizontal(|ui| {
                     theme::title(ui, &theme, "winmates");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new("✕").frame(false)).clicked() {
+                        if theme::icon_button(ui, &theme, theme::Icon::Close, "Close", false).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
@@ -136,7 +136,7 @@ impl eframe::App for Setup {
                         });
                     }
                     Step::Done => {
-                        ui.label(RichText::new("✓ Winmates is installed").heading().strong().color(theme.accent));
+                        ui.label(RichText::new("✔ Winmates is installed").heading().strong().color(theme.accent));
                         ui.label(RichText::new("It is starting now. Find it in the Start menu; it updates itself each time it starts.").color(theme.muted()));
                         ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
                             if ui.add(egui::Button::new("Close").min_size(egui::vec2(100.0, 32.0))).clicked() {

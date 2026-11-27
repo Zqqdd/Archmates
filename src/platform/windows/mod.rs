@@ -59,16 +59,19 @@ fn toast(title: &str, body: &str, icon: Option<&str>) {
     }
 }
 
-/// Shows a desktop notification.
-pub fn notify(title: &str, body: &str, icon: Option<&str>, _urgent: bool) {
+/// Shows a desktop notification (clicking a toast brings up Windows' default handling).
+pub fn notify(title: &str, body: &str, icon: Option<&str>, _urgent: bool, _on_click: super::OnClick) {
     toast(title, body, icon);
 }
 
 /// Toasts can't wait for an answer here: Winmates shows the Accept / Decline buttons instead.
-pub fn ask(title: &str, body: &str) -> Option<bool> {
+pub fn ask(title: &str, body: &str, _on_shown: impl FnOnce(u32)) -> Option<bool> {
     toast(title, &format!("{body}\nOpen Winmates to accept or decline."), None);
     None
 }
+
+/// Toasts are not closed by id here.
+pub fn close_notification(_id: u32) {}
 
 /// A Yes / No question in a standard dialog box (used by the uninstaller).
 pub fn confirm(title: &str, text: &str) -> bool {

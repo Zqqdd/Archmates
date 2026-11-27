@@ -12,7 +12,7 @@ use iroh::{Endpoint, EndpointId};
 use super::state::Shared;
 use crate::common::chat;
 use crate::common::profile::{AVATAR_MAX, Profile, read_avatar};
-use crate::common::proto::{ALPN, CODE_NOT_FRIEND, JSON_MAX, Request, Response};
+use crate::common::proto::{self, ALPN, CODE_NOT_FRIEND, JSON_MAX, Request, Response};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -31,9 +31,10 @@ impl ProtocolHandler for Greeter {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let id = connection.remote_id();
         let shared = &self.0;
-        // Refuse: not in our list, or invisible mode.
-        if shared.paths.is_invisible() || !shared.is_friend(&id) {
-            connection.close(CODE_NOT_FRIEND.into(), b"not a friend");
+        // Refuse: invisible mode (shown "offline"), or not in our list ("hasn't added you").
+        let invisible = shared.paths.is_invisible();
+        if invisible || !shared.is_friend(&id) {
+            proto::refuse(&connection, invisible);
             return Ok(());
         }
         if let Err(err) = serve(shared, &connection, id).await {
@@ -71,11 +72,12 @@ async fn serve(shared: &Arc<Shared>, connection: &Connection, id: EndpointId) ->
                     delivered: true,
                     file: None,
                     voice: None,
+                    received_ms: None,
                 };
                 if chat::receive(&shared.paths, &code, message)? {
                     let nickname =
                         shared.friends.lock().unwrap().get(&id).map(|f| f.nickname.clone()).unwrap_or_default();
-                    notify_message(&nickname, &text);
+                    notify_message(&code, &nickname, &text);
                 }
                 send.write_all(b"ok").await?;
                 let _ = shared.publish();
@@ -140,17 +142,14 @@ async fn exchange(shared: &Arc<Shared>, connection: &Connection, id: EndpointId)
     Ok(())
 }
 
-fn notify_message(nickname: &str, text: &str) {
+fn notify_message(code: &str, nickname: &str, text: &str) {
     let preview: String = text.chars().take(120).collect();
-    crate::platform::notify(nickname, &preview, None, true);
+    crate::platform::notify(nickname, &preview, None, true, crate::platform::OnClick::OpenChat(code.to_string()));
 }
 
 fn closed_as_not_friend(connection: &Connection) -> bool {
-    // The other side closes with code 403 when we are not in its list.
-    connection
-        .close_reason()
-        .map(|r| format!("{r:?}").contains(&format!("error_code: {CODE_NOT_FRIEND}")))
-        .unwrap_or(false)
+    // The other side closes with code 403 when we are not in its list (503 = invisible).
+    proto::close_code(connection) == Some(CODE_NOT_FRIEND as u64)
 }
 
 pub(super) fn short(id: &EndpointId) -> String {

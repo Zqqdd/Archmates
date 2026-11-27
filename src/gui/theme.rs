@@ -214,3 +214,54 @@ pub fn card(ui: &mut egui::Ui, theme: &Theme, glass: bool) {
 pub fn title(ui: &mut egui::Ui, theme: &Theme, text: &str) {
     ui.label(egui::RichText::new(format!("👥  {text}")).monospace().strong().size(14.0).color(theme.accent));
 }
+
+/// Icons drawn with lines instead of font characters: egui's built-in fonts have no ✕, and
+/// ←, ➤ only exist in its monospace font, so as text they showed as empty squares or nothing.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Icon {
+    Close,
+    Minimize,
+    Back,
+    Send,
+}
+
+/// A borderless icon button (hover: a faint background), or `filled` with the accent color.
+pub fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: Icon, hint: &str, filled: bool) -> egui::Response {
+    let size = if filled { egui::vec2(34.0, 32.0) } else { egui::Vec2::splat(30.0) };
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    let painter = ui.painter();
+    if filled {
+        painter.rect_filled(rect, 10, mix(theme.accent, theme.fg, 0.12 * hover));
+    } else if hover > 0.0 {
+        painter.rect_filled(rect, 8, alpha(theme.fg, 0.10 * hover));
+    }
+    let color = if filled { theme.on_accent() } else { theme.fg };
+    let stroke = Stroke::new(1.7_f32, color);
+    let c = rect.center();
+    let p = |dx: f32, dy: f32| c + egui::vec2(dx, dy);
+    match icon {
+        Icon::Close => {
+            painter.line_segment([p(-5.0, -5.0), p(5.0, 5.0)], stroke);
+            painter.line_segment([p(5.0, -5.0), p(-5.0, 5.0)], stroke);
+        }
+        Icon::Minimize => {
+            painter.line_segment([p(-6.0, 0.0), p(6.0, 0.0)], stroke);
+        }
+        Icon::Back => {
+            painter.line_segment([p(-6.0, 0.0), p(6.0, 0.0)], stroke);
+            painter.line_segment([p(-6.0, 0.0), p(-1.5, -4.5)], stroke);
+            painter.line_segment([p(-6.0, 0.0), p(-1.5, 4.5)], stroke);
+        }
+        Icon::Send => {
+            // A paper plane pointing right.
+            let tip = p(7.0, 0.0);
+            painter.add(egui::Shape::convex_polygon(
+                vec![p(-7.0, -6.5), tip, p(-7.0, 6.5), p(-4.0, 0.0)],
+                color,
+                Stroke::NONE,
+            ));
+        }
+    }
+    response.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand)
+}

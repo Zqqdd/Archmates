@@ -24,10 +24,10 @@ impl App {
             let label = if cfg!(windows) { "Start with Windows (and update by itself)" } else { "Start the service when I log in (systemd)" };
             if ui.checkbox(&mut self.autostart, label).changed() {
                 self.settings_status = match platform::set_autostart(self.autostart) {
-                    Ok(()) => "✓ Saved".into(),
+                    Ok(()) => "✔ Saved".into(),
                     Err(e) => {
                         self.autostart = platform::autostart_enabled();
-                        format!("✗ {e:#}")
+                        format!("✖ {e:#}")
                     }
                 };
             }
@@ -55,14 +55,14 @@ impl App {
                 if self.pill(ui, "Choose…").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("Pictures", &IMAGE_EXT).pick_file() {
                         self.settings_status = match set_avatar(&self.paths, &path) {
-                            Ok(()) => "✓ Picture set. Your friends get it within a minute.".into(),
-                            Err(e) => format!("✗ {e:#}"),
+                            Ok(()) => "✔ Picture set. Your friends get it within a minute.".into(),
+                            Err(e) => format!("✖ {e:#}"),
                         };
                     }
                 }
                 if self.pill(ui, "Use my account picture").clicked() {
                     let _ = std::fs::remove_file(self.paths.avatar());
-                    self.settings_status = "✓ Back to your account picture".into();
+                    self.settings_status = "✔ Back to your account picture".into();
                 }
             });
 
@@ -100,8 +100,8 @@ impl App {
                         b.lock().unwrap().update = format!("Installing {latest}…");
                         self.rt.spawn(async move {
                             let text = match update::install(&latest).await {
-                                Ok(()) => format!("✓ {latest} installed. Restart the app to use it."),
-                                Err(e) => format!("✗ {e:#}"),
+                                Ok(()) => format!("✔ {latest} installed. Restart the app to use it."),
+                                Err(e) => format!("✖ {e:#}"),
                             };
                             let mut g = b.lock().unwrap();
                             g.update = text;
@@ -158,8 +158,8 @@ impl App {
                     if ui.add(delete).clicked() {
                         let result = chat::delete_conversation(&self.paths, &code, &nickname);
                         *self.status.lock().unwrap() = match result {
-                            Ok(d) => format!("✓ Conversation deleted ({} messages, {} files)", d.messages, d.files),
-                            Err(e) => format!("✗ {e:#}"),
+                            Ok(d) => format!("✔ Conversation deleted ({} messages, {} files)", d.messages, d.files),
+                            Err(e) => format!("✖ {e:#}"),
                         };
                         self.messages.clear();
                         self.pictures.clear();

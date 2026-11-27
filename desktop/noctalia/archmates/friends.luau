@@ -6,6 +6,7 @@ local STATE = noctalia.expandPath("~/.cache/archmates/state.json")
 local GLASS = { fill = "surface/0.18", radius = 18, border = "on_surface_variant/0.55", borderWidth = 1 }
 
 local state = nil
+local copyHovered = false  -- own hover color: the "ghost" button's is green in some palettes
 
 local function nowMs()
   return os.time() * 1000
@@ -126,12 +127,20 @@ function render()
       end
     end
     table.insert(children, ui.row({ justify = "end" }, {
-      ui.button({
-        text = "Copy my code", glyph = "copy", variant = "ghost", controlSize = "sm",
+      ui.row({
+        key = "copy-code", gap = 6, align = "center", radius = 8, paddingH = 10, height = 30,
+        fill = if copyHovered then "on_surface/0.10" else "on_surface/0.0",
+        onHover = function(state)
+          copyHovered = state == "true"
+          render()
+        end,
         onClick = function()
           noctalia.copyToClipboard(state.me.code, "text/plain;charset=utf-8")
           noctalia.notify("Archmates", "Your friend code was copied: send it to your friend.")
         end,
+      }, {
+        ui.glyph({ name = "copy", size = 14, color = "on_surface" }),
+        ui.label({ text = "Copy my code", fontSize = 12, color = "on_surface" }),
       }),
     }))
   end

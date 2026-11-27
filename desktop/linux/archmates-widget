@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import sys
 import time
 import tomllib
@@ -480,6 +481,7 @@ class FriendWindow(Gtk.Window):
         # Pictures are blurred whenever you are not on this panel (another window is active).
         self.connect("notify::is-active", lambda *_: self.apply_blur())
         self.last_count = -1
+        self.fetching = False
         self.refresh()
         GLib.timeout_add_seconds(3, self.refresh)
 
@@ -587,11 +589,22 @@ class FriendWindow(Gtk.Window):
         else:
             self.header.append(label("RAM and storage not shared", "subtitle"))
 
+        # Reading the conversation runs a command: in a thread, so the window never freezes.
+        if not self.fetching:
+            self.fetching = True
+            threading.Thread(target=self.fetch_messages, daemon=True).start()
+        return True
+
+    def fetch_messages(self):
         r = subprocess.run([ARCHMATES, "chat", self.code, "--json", "-n", "40"], capture_output=True, text=True)
         try:
             messages = json.loads(r.stdout) if r.returncode == 0 else []
         except ValueError:
             messages = []
+        GLib.idle_add(self.show_messages, messages)
+
+    def show_messages(self, messages):
+        self.fetching = False
         if len(messages) != self.last_count or any(not m.get("delivered") for m in messages):
             # Only messages that just arrived get the fade-in.
             first_new = self.last_count if self.last_count >= 0 else len(messages)
@@ -625,7 +638,7 @@ class FriendWindow(Gtk.Window):
                 self.messages.append(b)
             self.apply_blur()
             GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(1e9) or False)
-        return True
+        return False
 
     def voice_widget(self, m):
         """Voice messages: a play button while the recording exists (until the next restart)."""

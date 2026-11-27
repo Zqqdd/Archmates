@@ -17,6 +17,28 @@ pub const JSON_MAX: usize = 64 * 1024;
 /// Close code used when the other side has not added us (yet).
 pub const CODE_NOT_FRIEND: u32 = 403;
 
+/// Close code used when the other side is in invisible mode: shown as "offline", not as
+/// "hasn't added you yet" (older versions closed with 403 in both cases).
+pub const CODE_UNAVAILABLE: u32 = 503;
+
+/// Refuses a connection: 503 while invisible, 403 for someone not in the friends list.
+pub fn refuse(connection: &iroh::endpoint::Connection, invisible: bool) {
+    if invisible {
+        connection.close(CODE_UNAVAILABLE.into(), b"unavailable");
+    } else {
+        connection.close(CODE_NOT_FRIEND.into(), b"not a friend");
+    }
+}
+
+/// The close code the other side gave, if it closed the connection on purpose.
+pub fn close_code(connection: &iroh::endpoint::Connection) -> Option<u64> {
+    use iroh::endpoint::{ApplicationClose, ConnectionError};
+    match connection.close_reason()? {
+        ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }) => Some(error_code.into_inner()),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {

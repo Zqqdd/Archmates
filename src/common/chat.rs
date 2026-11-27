@@ -34,7 +34,15 @@ pub struct Message {
     /// For voice messages: length in seconds (`file` is the recording, deleted at restart).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<u32>,
+    /// When it arrived on this PC (received messages). `ms` is the sender's clock, which may be
+    /// ahead: "unread" is decided with this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_ms: Option<u64>,
 }
+
+/// Conversation files are read then rewritten (`mark_delivered`) while messages keep arriving:
+/// every change goes through this lock so none is lost.
+static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn path(paths: &Paths, code: &str) -> PathBuf {
     paths.data.join("chat").join(format!("{code}.jsonl"))
@@ -62,6 +70,11 @@ fn save_all(paths: &Paths, code: &str, messages: &[Message]) -> Result<()> {
 }
 
 pub fn append(paths: &Paths, code: &str, message: &Message) -> Result<()> {
+    let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    append_unlocked(paths, code, message)
+}
+
+fn append_unlocked(paths: &Paths, code: &str, message: &Message) -> Result<()> {
     let p = path(paths, code);
     fs::create_dir_all(p.parent().unwrap())?;
     let mut f = fs::OpenOptions::new().create(true).append(true).open(p)?;
@@ -71,10 +84,12 @@ pub fn append(paths: &Paths, code: &str, message: &Message) -> Result<()> {
 
 /// Records a received message, ignoring one already stored (same id).
 pub fn receive(paths: &Paths, code: &str, message: Message) -> Result<bool> {
+    let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     if load(paths, code).iter().any(|m| m.id == message.id) {
         return Ok(false);
     }
-    append(paths, code, &Message { dir: "in".into(), delivered: true, ..message })?;
+    let received_ms = Some(crate::common::time::now_ms());
+    append_unlocked(paths, code, &Message { dir: "in".into(), delivered: true, received_ms, ..message })?;
     Ok(true)
 }
 
@@ -83,6 +98,7 @@ pub fn pending(paths: &Paths, code: &str) -> Vec<Message> {
 }
 
 pub fn mark_delivered(paths: &Paths, code: &str, id: &str) -> Result<()> {
+    let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = load(paths, code);
     let mut changed = false;
     for m in all.iter_mut().filter(|m| m.id == id) {
@@ -104,7 +120,7 @@ pub fn mark_read(paths: &Paths, code: &str) -> Result<()> {
 
 pub fn unread(paths: &Paths, code: &str) -> usize {
     let since: u64 = fs::read_to_string(read_marker(paths, code)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
-    load(paths, code).iter().filter(|m| m.dir == "in" && m.ms > since).count()
+    load(paths, code).iter().filter(|m| m.dir == "in" && m.received_ms.unwrap_or(m.ms) > since).count()
 }
 
 pub fn new_id() -> String {
@@ -125,6 +141,7 @@ pub struct Deleted {
 /// friend sent you (their folder in your downloads). Files *you* sent stay where they are on
 /// your PC: only the received copies are removed. Cannot be undone.
 pub fn delete_conversation(paths: &Paths, code: &str, nickname: &str) -> Result<Deleted> {
+    let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let messages = load(paths, code);
     let mut deleted = Deleted { messages: messages.len(), files: 0 };
     let downloads = crate::common::transfer::download_dir().join(crate::common::transfer::DOWNLOAD_FOLDER);
@@ -197,6 +214,7 @@ mod tests {
             delivered: true,
             file: file.map(|f| f.to_string_lossy().into_owned()),
             voice: None,
+            received_ms: None,
         };
         append(&paths, code, &msg("1", "in", Some(&received))).unwrap();
         append(&paths, code, &msg("2", "out", Some(&mine))).unwrap();
@@ -207,6 +225,24 @@ mod tests {
         assert!(!received.exists() && !voice_file.exists());
         assert!(mine.exists(), "a file you sent must never be deleted");
         assert!(load(&paths, code).is_empty());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unread_uses_the_local_arrival_time() {
+        let base = std::env::temp_dir().join(format!("archmates-unread-{}", std::process::id()));
+        let paths = Paths { data: base.join("data"), cache: base.join("cache") };
+        // The friend's clock is an hour ahead: their timestamp is in our future.
+        let ahead = crate::common::time::now_ms() + 3_600_000;
+        let m = Message {
+            id: "x1".into(), dir: "in".into(), text: "hi".into(), ms: ahead,
+            delivered: true, file: None, voice: None, received_ms: None,
+        };
+        assert!(receive(&paths, "f", m).unwrap());
+        assert_eq!(unread(&paths, "f"), 1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        mark_read(&paths, "f").unwrap();
+        assert_eq!(unread(&paths, "f"), 0, "a message read is read, whatever the sender's clock");
         let _ = fs::remove_dir_all(&base);
     }
 }

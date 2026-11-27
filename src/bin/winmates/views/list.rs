@@ -60,7 +60,7 @@ impl App {
             ui.horizontal(|ui| {
                 let copied = self.copied_at.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
                 if self
-                    .pill(ui, if copied { "✓ Copied" } else { "Copy my code" })
+                    .pill(ui, if copied { "✔ Copied" } else { "Copy my code" })
                     .on_hover_text(self.my_code())
                     .clicked()
                 {
@@ -91,9 +91,9 @@ impl App {
                                 self.add_code.clear();
                                 self.add_nickname.clear();
                                 self.reload(true);
-                                "✓ Added. They show up online once they add you too.".into()
+                                "✔ Added. They show up online once they add you too.".into()
                             }
-                            Err(e) => format!("✗ {e:#}"),
+                            Err(e) => format!("✖ {e:#}"),
                         };
                     }
                 });

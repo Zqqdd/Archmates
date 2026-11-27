@@ -27,6 +27,16 @@ pub mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// What a click on a notification does.
+#[derive(Debug, Clone)]
+pub enum OnClick {
+    Nothing,
+    /// Opens the conversation with this friend (friend code).
+    OpenChat(String),
+    /// Opens a file or folder.
+    OpenPath(PathBuf),
+}
+
 /// What a friend sees about your system (the "fetch" lines of your profile).
 #[derive(Debug, Clone, Default)]
 pub struct SystemInfo {

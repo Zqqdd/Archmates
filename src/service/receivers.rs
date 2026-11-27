@@ -19,18 +19,18 @@ pub(super) fn files(shared: Arc<Shared>) -> FileReceiver {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let offer = Offer { id: chat::new_id(), name: name.clone(), size };
             let nickname = shared.nickname(&id);
-            shared
-                .offers
-                .lock()
-                .unwrap()
-                .insert(offer.id.clone(), PendingOffer { friend: id, offer: offer.clone(), answer: tx });
+            shared.offers.lock().unwrap().insert(
+                offer.id.clone(),
+                PendingOffer { friend: id, offer: offer.clone(), answer: tx, notification: None },
+            );
             let _ = shared.publish();
             // Notification with Accept / Decline buttons (the widgets show the same buttons).
             let (shared, offer_id) = (shared.clone(), offer.id.clone());
             std::thread::spawn(move || {
                 let title = format!("{nickname} wants to send you a file");
                 let body = format!("{name} ({:.1} MB)", size as f64 / 1_048_576.0);
-                if let Some(accept) = crate::platform::ask(&title, &body) {
+                let shown = |n| shared.set_offer_notification(&offer_id, n);
+                if let Some(accept) = crate::platform::ask(&title, &body, shown) {
                     shared.answer_offer(&offer_id, accept);
                 }
             });
@@ -49,6 +49,7 @@ pub(super) fn files(shared: Arc<Shared>) -> FileReceiver {
                 delivered: true,
                 file: Some(saved.to_string_lossy().into_owned()),
                 voice: None,
+                received_ms: None,
             };
             let _ = chat::append(&shared.paths, &code, &message);
             crate::platform::notify(
@@ -56,6 +57,9 @@ pub(super) fn files(shared: Arc<Shared>) -> FileReceiver {
                 &format!("{name}\nSaved in {}", saved.parent().map(|p| p.display().to_string()).unwrap_or_default()),
                 None,
                 true,
+                crate::platform::OnClick::OpenPath(
+                    saved.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| saved.clone()),
+                ),
             );
             let _ = shared.publish();
         })
@@ -77,6 +81,7 @@ pub(super) fn voice(shared: Arc<Shared>) -> VoiceReceiver {
                 delivered: true,
                 file: Some(saved.to_string_lossy().into_owned()),
                 voice: Some(secs),
+                received_ms: None,
             };
             if chat::receive(&shared.paths, &code, message).unwrap_or(false) {
                 crate::platform::notify(
@@ -84,6 +89,7 @@ pub(super) fn voice(shared: Arc<Shared>) -> VoiceReceiver {
                     &format!("🎤 Voice message ({})", crate::common::voice::format_secs(secs)),
                     None,
                     true,
+                    crate::platform::OnClick::OpenChat(code.clone()),
                 );
             }
             let _ = shared.publish();

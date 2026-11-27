@@ -48,6 +48,7 @@ pub(super) async fn handle_command(
                 delivered: false,
                 file: None,
                 voice: None,
+                received_ms: None,
             };
             if let Err(err) = chat::append(&shared.paths, &code, &message) {
                 return fail(format!("{err:#}"));
@@ -91,6 +92,7 @@ pub(super) async fn handle_command(
                         delivered: true,
                         file: kept.map(|p| p.to_string_lossy().into_owned()),
                         voice: Some(secs),
+                        received_ms: None,
                     };
                     let _ = chat::append(&shared.paths, &code, &message);
                     let _ = shared.publish();
@@ -113,6 +115,7 @@ pub(super) async fn handle_command(
                         delivered: true,
                         file: Some(path.clone()),
                         voice: None,
+                        received_ms: None,
                     };
                     let _ = chat::append(&shared.paths, &code, &message);
                     let _ = shared.publish();

@@ -73,6 +73,8 @@ pub struct App {
     #[cfg(feature = "voice")]
     pub(crate) player: Option<(String, voice::Player)>,
     pub(crate) confirm_delete: Option<String>,
+    /// Last (friend, unread count) marked as read (see `conversation`).
+    pub(crate) marked_read: Option<(String, usize)>,
     pub(crate) autostart: bool,
     pub(crate) open_at_login: bool,
     pub(crate) share_stats: bool,
@@ -122,6 +124,7 @@ impl App {
             #[cfg(feature = "voice")]
             player: None,
             confirm_delete: None,
+            marked_read: None,
             autostart: platform::autostart_enabled(),
             settings_status: String::new(),
         };
@@ -216,8 +219,8 @@ impl App {
         let ctx = ctx.clone();
         self.rt.spawn(async move {
             let text = match ipc::request(&command).await {
-                Ok(a) => format!("✓ {}", a.message),
-                Err(e) => format!("✗ {e:#}"),
+                Ok(a) => format!("✔ {}", a.message),
+                Err(e) => format!("✖ {e:#}"),
             };
             if let Some(file) = cleanup {
                 let _ = std::fs::remove_file(file);
@@ -361,7 +364,7 @@ impl App {
                     self.recorder = Some(r);
                     *self.status.lock().unwrap() = "Recording… (5 min max)".into();
                 }
-                Err(e) => *self.status.lock().unwrap() = format!("✗ {e:#}"),
+                Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
             },
             #[cfg(feature = "voice")]
             Action::CancelRecording => {
@@ -384,17 +387,17 @@ impl App {
                                         Some(tmp),
                                     );
                                 }
-                                Err(e) => *self.status.lock().unwrap() = format!("✗ {e:#}"),
+                                Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
                             }
                         }
-                        Err(e) => *self.status.lock().unwrap() = format!("✗ {e:#}"),
+                        Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
                     }
                 }
             }
             #[cfg(feature = "voice")]
             Action::Play(id, path) => match voice::Player::play(Path::new(&path)) {
                 Ok(p) => self.player = Some((id, p)),
-                Err(e) => *self.status.lock().unwrap() = format!("✗ {e:#}"),
+                Err(e) => *self.status.lock().unwrap() = format!("✖ {e:#}"),
             },
             #[cfg(feature = "voice")]
             Action::StopPlaying => self.player = None,

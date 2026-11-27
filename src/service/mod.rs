@@ -34,11 +34,16 @@ use crate::common::transfer::FILE_ALPN;
 const INTERVAL: Duration = Duration::from_secs(30);
 
 pub async fn run() -> Result<()> {
-    // Only one service per user: two would fight over the same identity.
-    if crate::common::ipc::request(&crate::common::ipc::Command::Ping).await.is_ok() {
+    // Only one service per user: two would fight over the same identity. The lock file is
+    // held for as long as this service runs; the ping catches services from older versions.
+    let paths = Paths::detect();
+    std::fs::create_dir_all(&paths.data)?;
+    let lock =
+        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.data.join("service.lock"))?;
+    if lock.try_lock().is_err() || crate::common::ipc::request(&crate::common::ipc::Command::Ping).await.is_ok() {
         return Err(anyhow!("the archmates service is already running"));
     }
-    let paths = Paths::detect();
+    let _lock = lock;
     let key = crate::common::config::load_or_create_key(&paths)?;
     let me = key.public();
 
