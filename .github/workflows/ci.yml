@@ -26,7 +26,7 @@ jobs:
       - run: cargo build --locked --release --features app
       - run: cargo test --locked --release
       - name: Check shell scripts
-        run: bash -n installer.sh && bash -n scripts/setup-desktop.sh && python3 -m py_compile widget/archmates-widget
+        run: bash -n installer.sh && bash -n desktop/linux/setup-desktop.sh && bash -n scripts/demo-friend.sh && python3 -m py_compile desktop/linux/archmates-widget
 
   # Winmates (Windows client) and the shared code on Windows.
   windows:

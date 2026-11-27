@@ -241,7 +241,7 @@ New AUR package submissions are currently closed. A ready `PKGBUILD` for `archma
 
 ### Publishing a new version (maintainers)
 
-Bump the version in `Cargo.toml` (and `noctalia/archmates/plugin.toml`), run `cargo build` to refresh
+Bump the version in `Cargo.toml` (and `desktop/noctalia/archmates/plugin.toml`), run `cargo build` to refresh
 `Cargo.lock`, commit, then push a tag. GitHub Actions builds and publishes the Linux archive and the
 Winmates archive (built on a Windows runner):
 
@@ -274,30 +274,60 @@ traffic goes through a public Iroh relay, which only ever sees encrypted data.
 
 ## Code layout
 
-| File | Role |
-|---|---|
-| `src/main.rs` | the commands (`archmates code`, `add`, `list`…) |
-| `src/bin/winmates.rs` | Winmates, the Windows client (also a desktop app on Linux) |
-| `src/bin/winmates-updater.rs` | WinmatesUpdater: started at every Windows login, updates and starts everything |
-| `src/bin/winmates-setup.rs` | WinmatesSetup.exe, the installer (the programs are embedded in it) |
-| `src/ui/theme.rs` | the Archmates look for Winmates: colors, frosted glass, card |
-| `src/launcher.rs` | update, service, install and uninstall, shared by the three Windows programs |
-| `src/voice.rs` | voice messages: recording, playback, sending (`archmates/voice/1`) |
-| `src/platform.rs` | what differs between Linux and Windows: notifications, start with the system… |
-| `src/config.rs` | local files: key, friends list, invisible mode |
-| `src/profile.rs` | builds your profile (distro, kernel, picture…) |
-| `src/proto.rs` | the format of the messages exchanged between machines |
-| `src/daemon.rs` | the service: listens, contacts friends, writes the state, notifications |
-| `src/chat.rs` | conversations and the offline message queue |
-| `src/transfer.rs` | file transfers (own protocol, `archmates/file/1`) |
-| `src/ipc.rs` | local socket (named pipe on Windows) used by the CLI, widgets and Winmates to reach the service |
-| `src/stats.rs` | RAM and storage usage |
-| `noctalia/archmates/friend.luau` | the Noctalia friend panel |
-| `src/widget.rs` | starts and stops the universal widget |
-| `src/update.rs` | checks GitHub for new releases |
-| `noctalia/archmates/` | the Noctalia desktop widget (Luau) |
-| `widget/archmates-widget` | the universal desktop widget (Python + GTK4) |
-| `packaging/archmates.service` | the systemd user unit |
+```
+src/
+├── main.rs              the `archmates` command (entry point)
+├── cli/                 its subcommands, one file per topic
+│   ├── mod.rs           arguments and dispatch
+│   ├── friends.rs       code, add, remove, list, invisible
+│   ├── messages.rs      send, send-file, offers, accept / decline, chat, delete-chat
+│   ├── voice.rs         voice send / play
+│   ├── profile.rs       profile, avatar, stats
+│   └── system.rs        widget, update
+├── lib.rs               the shared library used by every program
+├── common/              same code on Linux and Windows (the protocol is the same)
+│   ├── config.rs        local files: key, friends list, folders
+│   ├── profile.rs       your profile and picture
+│   ├── proto.rs         messages exchanged between machines (`archmates/presence/1`)
+│   ├── chat.rs          conversations and the offline message queue
+│   ├── transfer.rs      file transfers, asked first (`archmates/file/2`)
+│   ├── voice/           voice messages (`archmates/voice/1`); `audio.rs`: microphone, speakers
+│   ├── ipc.rs           local socket (named pipe on Windows) to reach the service
+│   ├── stats.rs         RAM and storage usage
+│   ├── update.rs        new releases on GitHub, SHA-256 checked
+│   └── time.rs          "5 min ago", sizes
+├── platform/            what differs per system, behind the same function names
+│   ├── mod.rs           the shared interface
+│   ├── linux/           notify-send, systemd, XDG folders, /proc; `widget.rs`: universal widget supervisor
+│   └── windows/         toasts, registry, Win32 usage, install / uninstall, in-place updates
+├── service/             the background service (`archmates daemon`)
+│   ├── mod.rs           start-up and main loop
+│   ├── state.rs         friends' status and `state.json`, read by every widget
+│   ├── presence.rs      hello, profiles, pictures, message delivery
+│   ├── commands.rs      requests from the CLI and widgets
+│   ├── receivers.rs     incoming files (with your consent) and voice messages
+│   ├── updates.rs       daily update check
+│   └── control.rs       starting / updating the service from an app (Winmates)
+├── gui/theme.rs         the Archmates look (colors, frosted card) for Winmates and its installer
+└── bin/
+    ├── winmates/        Winmates, the Windows client (also a Linux desktop app)
+    │   ├── main.rs      start-up, single window
+    │   ├── app.rs       window state and actions
+    │   ├── views/       header, friends list, conversation, settings
+    │   └── …            widgets, pictures, startup, instance, install (Windows)
+    ├── winmates-updater.rs   WinmatesUpdater: at every Windows login, updates and starts everything
+    └── winmates-setup.rs     WinmatesSetup.exe, the installer
+
+desktop/
+├── linux/               generic Linux desktop (any compositor)
+│   ├── archmates-widget     the universal widget (Python + GTK4 layer-shell)
+│   └── setup-desktop.sh     places the widget, adds the Hyprland blur rules
+└── noctalia/archmates/  the Noctalia plugin (Luau): desktop widget and friend panel
+
+packaging/               systemd user unit, AUR package
+scripts/demo-friend.sh   a fake friend to try archmates alone
+installer.sh             Linux install (from source or a release archive)
+```
 
 ## Prototype limitations
 

@@ -16,7 +16,7 @@ path = "src/main.rs"
 # Also runs on Linux as a desktop app: cargo build --release --features app
 [[bin]]
 name = "winmates"
-path = "src/bin/winmates.rs"
+path = "src/bin/winmates/main.rs"
 required-features = ["app"]
 
 # Background updater for Winmates: installed in AppData, started at every login.

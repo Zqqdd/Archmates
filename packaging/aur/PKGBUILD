@@ -27,9 +27,9 @@ package() {
     | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/archmates.service"
 
   install -d "$pkgdir/usr/share/archmates"
-  cp -r noctalia "$pkgdir/usr/share/archmates/"
-  install -Dm755 scripts/setup-desktop.sh "$pkgdir/usr/share/archmates/setup-desktop.sh"
-  install -Dm755 widget/archmates-widget "$pkgdir/usr/share/archmates/archmates-widget"
+  cp -r desktop/noctalia "$pkgdir/usr/share/archmates/"
+  install -Dm755 desktop/linux/setup-desktop.sh "$pkgdir/usr/share/archmates/setup-desktop.sh"
+  install -Dm755 desktop/linux/archmates-widget "$pkgdir/usr/share/archmates/archmates-widget"
   install -d "$pkgdir/usr/bin"
   ln -s /usr/share/archmates/setup-desktop.sh "$pkgdir/usr/bin/archmates-setup-desktop"
   ln -s /usr/share/archmates/archmates-widget "$pkgdir/usr/bin/archmates-widget"
