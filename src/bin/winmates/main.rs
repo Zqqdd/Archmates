@@ -1,6 +1,6 @@
-//! Winmates: the Windows client of Archmates, made to look like the Linux rice: a small
-//! frosted-glass card with your friends (like the universal widget), and a friend panel in
-//! the style of the Noctalia panel (picture, status, RAM / storage, chat, files, voice).
+//! Winmates: the Windows client of Archmates, drawn like the Noctalia version: a frosted-glass
+//! desktop widget with your friends, pinned to the desktop, and a separate panel opened from
+//! it (picture, status, RAM / storage, chat, files, voice; adding a friend; settings).
 //! It speaks the same protocol as the Linux version: Windows and Linux friends chat as usual.
 //!
 //! It also runs on Linux as a desktop app, named "Archmates" there
@@ -9,8 +9,9 @@
 //! - Installed by WinmatesSetup.exe; WinmatesUpdater starts it at every login after updating.
 //! - Each time it starts it also checks for an update itself, and makes sure the service runs.
 //! - Started from the zip (older way), it installs itself on first run.
-//! - Only one window: starting it again brings the open one to the front.
-//! - Closing it keeps the service running (friends still see you, notifications still come).
+//! - Only one copy: starting it again brings the widget above your windows;
+//!   `winmates --open <friend>` opens that conversation (nickname or friend code).
+//! - Closing the panel keeps the widget; the service keeps running either way.
 //! - Pictures in the chat are blurred whenever the window is not the active one.
 //! - Voice messages: up to 5 minutes, deleted at every restart.
 //! - ⚙ in a conversation: delete it for good, with every file that friend sent you.
@@ -18,6 +19,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod desktop;
 #[cfg(windows)]
 mod install;
 mod instance;
@@ -65,22 +67,28 @@ fn main() {
     }
 
     // One window only: if one is open, bring it to the front instead.
+    let open = args.iter().position(|a| a == "--open").and_then(|i| args.get(i + 1)).cloned();
     let show = Arc::new(AtomicBool::new(false));
-    if !runtime.block_on(instance::claim(show.clone())) {
+    if !runtime.block_on(instance::claim(show.clone(), &instance::request(open.as_deref()))) {
         return;
+    }
+    if let Some(who) = open {
+        *instance::OPEN.lock().unwrap() = Some(who);
     }
 
     let background = Arc::new(Mutex::new(startup::Background::default()));
     runtime.spawn(startup::startup(background.clone(), !has("--from-updater")));
 
+    // The main window is the desktop widget (see desktop.rs); conversations open in the panel.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(APP_NAME)
+            .with_title(desktop::widget_title())
             .with_app_id("winmates")
-            .with_inner_size([380.0, 600.0])
-            .with_min_inner_size([320.0, 420.0])
+            .with_inner_size([views::WIDGET_W, 200.0])
             .with_decorations(false)
-            .with_transparent(true),
+            .with_transparent(true)
+            .with_taskbar(false)
+            .with_window_level(desktop::WIDGET_LEVEL),
         persist_window: true,
         ..Default::default()
     };

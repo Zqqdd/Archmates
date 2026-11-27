@@ -1,11 +1,11 @@
-//! Settings, and the "delete conversation" confirmation.
+//! Settings (in the panel).
 
 use archmates::service::control as launcher;
-use archmates::{chat, ipc, platform, stats, update};
-use eframe::egui::{self, Color32, RichText};
+use archmates::{ipc, platform, stats, update};
+use eframe::egui::{self, RichText};
 
 use crate::APP_NAME;
-use crate::app::{App, set_avatar};
+use crate::app::{Action, App, set_avatar};
 use crate::pictures::IMAGE_EXT;
 use crate::startup::check_for_update;
 use crate::theme::{self, alpha};
@@ -13,11 +13,21 @@ use crate::theme::{self, alpha};
 impl App {
     // ── Settings ──
 
-    pub(crate) fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    pub(crate) fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, action: &mut Option<Action>) {
         let theme = self.theme;
+        self.panel_top(
+            ui,
+            ctx,
+            32.0,
+            action,
+            |_, ui| {
+                ui.label(RichText::new("Settings").font(theme::bold(17.0)));
+            },
+            |_, _, _| {},
+        );
         let section = |ui: &mut egui::Ui, title: &str| {
             ui.add_space(8.0);
-            ui.label(RichText::new(title).small().strong().color(theme.accent));
+            ui.label(RichText::new(title).font(theme::bold(11.0)).color(theme.accent));
         };
         egui::ScrollArea::vertical().id_salt("settings").show(ui, |ui| {
             section(ui, "STARTUP");
@@ -52,7 +62,7 @@ impl App {
 
             section(ui, "PROFILE PICTURE");
             ui.horizontal(|ui| {
-                if self.pill(ui, "Choose…").clicked() {
+                if theme::quiet_button(ui, &theme, None, "Choose…").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("Pictures", &IMAGE_EXT).pick_file() {
                         self.settings_status = match set_avatar(&self.paths, &path) {
                             Ok(()) => "✔ Picture set. Your friends get it within a minute.".into(),
@@ -60,7 +70,7 @@ impl App {
                         };
                     }
                 }
-                if self.pill(ui, "Use my account picture").clicked() {
+                if theme::quiet_button(ui, &theme, None, "Use my account picture").clicked() {
                     let _ = std::fs::remove_file(self.paths.avatar());
                     self.settings_status = "✔ Back to your account picture".into();
                 }
@@ -85,7 +95,7 @@ impl App {
             ui.horizontal(|ui| {
                 if checking {
                     ui.spinner();
-                } else if self.pill(ui, "Check for updates").clicked() {
+                } else if theme::quiet_button(ui, &theme, None, "Check for updates").clicked() {
                     let b = self.background.clone();
                     let ctx = ctx.clone();
                     self.rt.spawn(async move {
@@ -94,7 +104,7 @@ impl App {
                     });
                 }
                 if let Some(latest) = offer {
-                    if self.pill(ui, &format!("Install {latest}")).clicked() {
+                    if theme::primary_button(ui, &theme, &format!("Install {latest}")).clicked() {
                         let b = self.background.clone();
                         let ctx = ctx.clone();
                         b.lock().unwrap().update = format!("Installing {latest}…");
@@ -121,58 +131,13 @@ impl App {
                 self.rt.block_on(async {
                     let _ = ipc::request(&ipc::Command::Quit).await;
                 });
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
             }
-            ui.label(RichText::new(format!("Closing the window keeps {APP_NAME} running in the background.")).small().color(theme.muted()));
+            ui.label(RichText::new(format!("Closing this panel keeps {APP_NAME} on your desktop.")).small().color(theme.muted()));
             if !self.settings_status.is_empty() {
                 ui.add_space(6.0);
                 ui.label(RichText::new(&self.settings_status).small());
             }
         });
-    }
-
-    /// "Delete conversation?" confirmation.
-    pub(crate) fn delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(code) = self.confirm_delete.clone() else { return };
-        let nickname = self.friends().into_iter().find(|f| f.code == code).map(|f| f.nickname).unwrap_or_default();
-        let theme = self.theme;
-        let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("delete-chat")).show(ctx, |ui| {
-            ui.set_width(300.0);
-            ui.label(RichText::new(format!("Delete your conversation with {nickname}?")).strong());
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(format!(
-                    "Every message and voice message, and every file {nickname} sent you ({}), is deleted from this PC for good. Files you sent stay where they are.",
-                    archmates::transfer::received_dir(&nickname).display()
-                ))
-                .small()
-                .color(theme.muted()),
-            );
-            ui.add_space(4.0);
-            ui.label(RichText::new("This cannot be undone.").small().color(theme::DANGER));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let delete = egui::Button::new(RichText::new("Delete").strong().color(Color32::WHITE)).fill(Color32::from_rgb(0xc4, 0x3c, 0x3c));
-                    if ui.add(delete).clicked() {
-                        let result = chat::delete_conversation(&self.paths, &code, &nickname);
-                        *self.status.lock().unwrap() = match result {
-                            Ok(d) => format!("✔ Conversation deleted ({} messages, {} files)", d.messages, d.files),
-                            Err(e) => format!("✖ {e:#}"),
-                        };
-                        self.messages.clear();
-                        self.pictures.clear();
-                        close = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-            });
-        });
-        if close || modal.should_close() {
-            self.confirm_delete = None;
-        }
     }
 }

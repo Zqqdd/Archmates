@@ -21,15 +21,21 @@ Download **`WinmatesSetup-<version>.exe`** from the
 it installs Winmates for your account in `%LOCALAPPDATA%\Programs\Winmates`, adds it to the Start menu
 (and the desktop if you want), and to *Settings → Apps* to uninstall it.
 
-Winmates looks like the Linux rice: a small frosted-glass card with your friends (acrylic blur, your Windows
-accent color or your pywal / winwal colors), and a friend panel in the style of the Noctalia panel.
+Winmates is drawn like the Noctalia version (same layout, sizes, icons and glass), in your Windows accent
+color or your pywal / winwal colors:
+
+- a **desktop widget** with your friends and who is online, frosted glass (acrylic), pinned to the desktop:
+  under your windows, still there when you show the desktop (Win+D), no taskbar button. Drag it to move it;
+- click a friend and their **panel** opens in its own window: profile, RAM and storage, conversation, files,
+  voice messages. The ＋ and ⚙ of the widget open "Add a friend" and the settings in that panel.
+  `winmates.exe --open <friend>` opens a conversation directly.
 
 - **WinmatesUpdater** starts with Windows at every login. It installs a new release if there is one
   (SHA-256 checked), starts the service, then opens Winmates (*Settings → Open Winmates when I log in* to turn
   that off). Winmates also checks for an update each time you open it.
   Set `ARCHMATES_NO_UPDATE_CHECK=1` to turn updates off.
-- **Closing the window keeps Winmates running** in the background: your friends still see you online and you
-  still get notifications. *Settings → Quit Winmates* stops it completely.
+- **Closing the panel keeps the widget on your desktop**, and the service runs in the background: your friends
+  still see you online and you still get notifications. *Settings → Quit Winmates* stops it completely.
 - Your data is in `%APPDATA%\Winmates` (friend code, friends list, conversations), received files in
   `Downloads\Winmates\<friend>\`.
 - The `archmates` command is installed next to it, with the same commands as on Linux:
@@ -71,7 +77,8 @@ The script does everything, with no password needed:
   without touching your other widgets (move it later with `noctalia msg desktop-widgets-edit`);
 - without Noctalia: the **universal widget** is used instead (see below), and the script tells you which
   packages it needs, if any;
-- if you use **Hyprland**: adds a frosted-glass blur rule behind the widget. The rule is only kept if Hyprland
+- if you use **Hyprland**: adds a frosted-glass blur rule behind the widget (in the syntax of your Hyprland
+  version: `hyprland.lua`, or `hyprland.conf` before and after 0.53). The rule is only kept if Hyprland
   accepts it; otherwise your config is restored as it was.
 
 Running the installer again (for an update) keeps your widget where you put it.
@@ -110,9 +117,14 @@ usage, your conversation, a message field and a "send a file" button.
 - **Pictures** you send or receive are shown directly in the conversation. In Winmates (and the desktop app) and
   in the universal widget, they are **blurred automatically whenever the chat is not the active window**, and
   sharp again as soon as you come back to it.
-- **Voice messages** (up to 5 minutes): 🎤 in Winmates / the desktop app, or `archmates voice send <friend>`.
-  They are sent directly while your friend is online, play in Winmates, the universal widget and the Noctalia
-  panel (`archmates voice play <file>`), and are **deleted at every restart**, on both sides.
+- **Voice messages** (up to 5 minutes), the same everywhere: 🎤 in the friend panel (Winmates, universal
+  widget, Noctalia) records; ■ stops so you can **listen before sending**; ➤ sends, 🗑 discards. They play with
+  a waveform that fills up. The service does the recording and playing for every app (its *voice desk*), so
+  it works the same on Windows and Linux (PipeWire / PulseAudio / ALSA). From a terminal:
+  `archmates voice send <friend>` (record, Enter to send), or `voice record <friend>`, `voice stop`,
+  `voice play`, `voice send-recording`, `voice discard`, `voice status`.
+  They are sent directly while your friend is online (else the recording waits for you to send it again),
+  and are **deleted at every restart**, on both sides.
 - **Delete a conversation**: ⚙ in the friend panel (Winmates, universal widget, Noctalia) or
   `archmates delete-chat <friend>`. It deletes every message and voice message, and every file that friend sent
   you (their folder in your downloads), for good. Files you sent stay where they are.
@@ -132,9 +144,20 @@ archmates avatar --remove            # back to the system picture
 
 ### Universal widget (without Noctalia)
 
-`archmates-widget` is a small frosted-glass card pinned to your desktop, behind your windows. It works on
-Wayland compositors with the layer-shell protocol: Hyprland, sway, KDE Plasma, niri, river, labwc, Wayfire…
-(not GNOME). It needs:
+`archmates-widget` is a small frosted-glass card pinned to your desktop, behind your windows, drawn like the
+Noctalia widget (same icons, sizes and colors). It works on Wayland compositors with the layer-shell protocol:
+Hyprland, sway, KDE Plasma, niri, river, labwc, Wayfire… (not GNOME).
+
+**The glass is a real blur, not just transparency**, as far as your compositor allows:
+
+- **Hyprland, SwayFX**: the compositor blurs what is behind the widget and the chat panel (the widget asks
+  for it each time it starts, whatever your config syntax);
+- **elsewhere** (KDE, niri, river, labwc, plain sway…), compositors don't offer blur to GTK apps. The widget
+  sits right on your wallpaper, so it **blurs your wallpaper itself** (read from Noctalia, swww / awww,
+  hyprpaper, swaybg, waypaper or Plasma): the same frosted look. The chat panel floats over windows it
+  cannot see: there it is simply more opaque, rather than a fake glass.
+
+It needs:
 
 ```bash
 sudo pacman -S --needed gtk4 gtk4-layer-shell python-gobject
@@ -281,7 +304,7 @@ src/
 │   ├── mod.rs           arguments and dispatch
 │   ├── friends.rs       code, add, remove, list, invisible
 │   ├── messages.rs      send, send-file, offers, accept / decline, chat, delete-chat
-│   ├── voice.rs         voice send / play
+│   ├── voice.rs         voice send, record, stop, play…
 │   ├── profile.rs       profile, avatar, stats
 │   └── system.rs        widget, update
 ├── lib.rs               the shared library used by every program
@@ -291,7 +314,8 @@ src/
 │   ├── proto.rs         messages exchanged between machines (`archmates/presence/1`)
 │   ├── chat.rs          conversations and the offline message queue
 │   ├── transfer.rs      file transfers, asked first (`archmates/file/2`)
-│   ├── voice/           voice messages (`archmates/voice/1`); `audio.rs`: microphone, speakers
+│   ├── voice/           voice messages (`archmates/voice/1`); `audio.rs`: microphone, speakers;
+│   │                    `desk.rs`: what the service records / plays, for every app
 │   ├── ipc.rs           local socket (named pipe on Windows) to reach the service
 │   ├── stats.rs         RAM and storage usage
 │   ├── update.rs        new releases on GitHub, SHA-256 checked
@@ -306,26 +330,31 @@ src/
 │   ├── presence.rs      hello, profiles, pictures, message delivery
 │   ├── commands.rs      requests from the CLI and widgets
 │   ├── receivers.rs     incoming files (with your consent) and voice messages
+│   ├── voice_desk.rs    records and plays voice messages for every app
 │   ├── updates.rs       daily update check
 │   └── control.rs       starting / updating the service from an app (Winmates)
-├── gui/theme.rs         the Archmates look (colors, frosted card) for Winmates and its installer
+├── gui/theme.rs         the Archmates look (colors, glass, fonts, Noctalia icons) for Winmates and its installer
 └── bin/
     ├── winmates/        Winmates, the Windows client (also a Linux desktop app)
-    │   ├── main.rs      start-up, single window
-    │   ├── app.rs       window state and actions
-    │   ├── views/       header, friends list, conversation, settings
+    │   ├── main.rs      start-up, single copy
+    │   ├── app.rs       state and actions
+    │   ├── desktop.rs   pinning the widget to the Windows desktop
+    │   ├── views/       desktop widget; panel: conversation, add a friend, settings
     │   └── …            widgets, pictures, startup, instance, install (Windows)
     ├── winmates-updater.rs   WinmatesUpdater: at every Windows login, updates and starts everything
     └── winmates-setup.rs     WinmatesSetup.exe, the installer
 
 desktop/
 ├── linux/               generic Linux desktop (any compositor)
-│   ├── archmates-widget     the universal widget (Python + GTK4 layer-shell)
+│   ├── archmates-widget     the universal widget (Python + GTK4 layer-shell), with its glass
+│   ├── icons/               the Noctalia icons as symbolic SVGs, for the widget
 │   └── setup-desktop.sh     places the widget, adds the Hyprland blur rules
-└── noctalia/archmates/  the Noctalia plugin (Luau): desktop widget and friend panel
+└── noctalia/archmates/  the Noctalia plugin (Luau): desktop widget and friend panel (the reference look)
 
+assets/icons/            the same icons as a font, for Winmates (Tabler icons, MIT)
 packaging/               systemd user unit, AUR package
 scripts/demo-friend.sh   a fake friend to try archmates alone
+scripts/make-icons.py    rebuilds the icons above from the Tabler font
 installer.sh             Linux install (from source or a release archive)
 ```
 

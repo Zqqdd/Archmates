@@ -84,6 +84,7 @@ pub(super) struct Shared {
     pub(super) notified: Mutex<HashSet<EndpointId>>,
     pub(super) update_available: Mutex<Option<String>>,
     pub(super) offers: Mutex<HashMap<String, PendingOffer>>,
+    pub(super) voice: super::voice_desk::Desk,
 }
 
 impl Shared {

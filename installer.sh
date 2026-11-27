@@ -21,6 +21,7 @@ fi
 echo "→ Installing the commands to ~/.local/bin"
 install -Dm755 "$BIN" ~/.local/bin/archmates
 install -Dm755 desktop/linux/archmates-widget ~/.local/bin/archmates-widget
+rm -rf ~/.local/share/archmates/icons && mkdir -p ~/.local/share/archmates && cp -r desktop/linux/icons ~/.local/share/archmates/icons
 
 echo "→ Presence service (systemd user unit)"
 install -Dm644 packaging/archmates.service ~/.config/systemd/user/archmates.service

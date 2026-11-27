@@ -164,6 +164,9 @@ pub fn available(path: &str) -> bool {
     Path::new(path).exists()
 }
 
+pub mod desk;
+pub use desk::{DeskState, DeskStatus};
+
 // ── Microphone and speakers (audio.rs) ──────────────────────────────────────
 
 #[cfg(feature = "voice")]

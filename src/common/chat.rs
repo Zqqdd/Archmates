@@ -235,8 +235,14 @@ mod tests {
         // The friend's clock is an hour ahead: their timestamp is in our future.
         let ahead = crate::common::time::now_ms() + 3_600_000;
         let m = Message {
-            id: "x1".into(), dir: "in".into(), text: "hi".into(), ms: ahead,
-            delivered: true, file: None, voice: None, received_ms: None,
+            id: "x1".into(),
+            dir: "in".into(),
+            text: "hi".into(),
+            ms: ahead,
+            delivered: true,
+            file: None,
+            voice: None,
+            received_ms: None,
         };
         assert!(receive(&paths, "f", m).unwrap());
         assert_eq!(unread(&paths, "f"), 1);

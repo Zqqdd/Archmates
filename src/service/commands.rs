@@ -71,36 +71,16 @@ pub(super) async fn handle_command(
                 fail("this file offer has expired".into())
             }
         }
-        Command::SendVoice { to, path } => {
-            let Some((id, code, nickname)) = shared.resolve(&to) else {
-                return fail(format!("no friend named \"{to}\""));
-            };
-            let wav = match std::fs::read(&path) {
-                Ok(w) => w,
-                Err(e) => return fail(format!("cannot read the recording: {e}")),
-            };
-            let msg_id = chat::new_id();
-            let ms = now_ms();
-            match crate::common::voice::send(&endpoint, id, &msg_id, &wav, ms).await {
-                Ok(secs) => {
-                    let kept = crate::common::voice::keep_sent(&shared.paths, &code, &msg_id, &wav).ok();
-                    let message = chat::Message {
-                        id: msg_id,
-                        dir: "out".into(),
-                        text: format!("🎤 Voice message ({})", crate::common::voice::format_secs(secs)),
-                        ms,
-                        delivered: true,
-                        file: kept.map(|p| p.to_string_lossy().into_owned()),
-                        voice: Some(secs),
-                        received_ms: None,
-                    };
-                    let _ = chat::append(&shared.paths, &code, &message);
-                    let _ = shared.publish();
-                    Answer { ok: true, message: format!("voice message sent to {nickname}") }
-                }
-                Err(err) => fail(format!("{err:#}")),
-            }
-        }
+        Command::SendVoice { to, path } => match std::fs::read(&path) {
+            Ok(wav) => send_voice(&endpoint, &shared, &to, &wav).await,
+            Err(e) => fail(format!("cannot read the recording: {e}")),
+        },
+        Command::VoiceRecord { to } => shared.voice.record(&shared, to).await,
+        Command::VoiceStop => shared.voice.stop(&shared.paths),
+        Command::VoiceSendRecording => shared.voice.send(&endpoint, &shared).await,
+        Command::VoiceDiscard => shared.voice.discard(&shared.paths),
+        Command::VoicePlay { id, path } => shared.voice.play(&shared.paths, id, path).await,
+        Command::VoicePlayStop => shared.voice.stop_playing(&shared.paths),
         Command::SendFile { to, path } => {
             let Some((id, code, nickname)) = shared.resolve(&to) else {
                 return fail(format!("no friend named \"{to}\""));
@@ -124,5 +104,40 @@ pub(super) async fn handle_command(
                 Err(err) => fail(format!("{err:#}")),
             }
         }
+    }
+}
+
+/// Sends a recorded voice message (WAV bytes) and adds it to the conversation.
+pub(super) async fn send_voice(
+    endpoint: &Endpoint,
+    shared: &Shared,
+    to: &str,
+    wav: &[u8],
+) -> crate::common::ipc::Answer {
+    use crate::common::ipc::Answer;
+    use crate::common::voice;
+    let Some((id, code, nickname)) = shared.resolve(to) else {
+        return Answer { ok: false, message: format!("no friend named \"{to}\"") };
+    };
+    let msg_id = chat::new_id();
+    let ms = now_ms();
+    match voice::send(endpoint, id, &msg_id, wav, ms).await {
+        Ok(secs) => {
+            let kept = voice::keep_sent(&shared.paths, &code, &msg_id, wav).ok();
+            let message = chat::Message {
+                id: msg_id,
+                dir: "out".into(),
+                text: format!("🎤 Voice message ({})", voice::format_secs(secs)),
+                ms,
+                delivered: true,
+                file: kept.map(|p| p.to_string_lossy().into_owned()),
+                voice: Some(secs),
+                received_ms: None,
+            };
+            let _ = chat::append(&shared.paths, &code, &message);
+            let _ = shared.publish();
+            Answer { ok: true, message: format!("voice message sent to {nickname}") }
+        }
+        Err(err) => Answer { ok: false, message: format!("{err:#}") },
     }
 }

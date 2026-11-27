@@ -30,6 +30,22 @@ pub enum Command {
         to: String,
         path: String,
     },
+    /// Voice desk (see voice/desk.rs): the service records from the microphone for this friend.
+    VoiceRecord {
+        to: String,
+    },
+    /// Stops the recording and keeps it for review (listen, then send or discard).
+    VoiceStop,
+    /// Sends the recording to its friend (stopping it first if it is still going).
+    VoiceSendRecording,
+    /// Cancels the recording, or discards the one under review.
+    VoiceDiscard,
+    /// Plays a voice file: a message (`id` = its id) or the recording under review ("draft").
+    VoicePlay {
+        id: String,
+        path: String,
+    },
+    VoicePlayStop,
     /// "Are you running?" Answer: ok, with the service version as message.
     Ping,
     /// Stops the service (used by Winmates to restart it after an update, or to quit).
