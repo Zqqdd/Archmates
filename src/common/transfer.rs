@@ -18,7 +18,7 @@ use iroh::{Endpoint, EndpointId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-use crate::config::{FriendList, Paths};
+use crate::common::config::{FriendList, Paths};
 
 pub const FILE_ALPN: &[u8] = b"archmates/file/2";
 /// How long the receiver has to accept a file.
@@ -34,29 +34,9 @@ struct Header {
     size: u64,
 }
 
-/// Your download folder (XDG_DOWNLOAD_DIR from ~/.config/user-dirs.dirs, else ~/Downloads;
-/// on Windows: the Downloads folder set in Explorer, else %USERPROFILE%\Downloads).
+/// Your download folder (see `platform::download_dir`).
 pub fn download_dir() -> PathBuf {
-    let home = crate::platform::home();
-    #[cfg(windows)]
-    {
-        use crate::platform::reg;
-        const SHELL_FOLDERS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
-        // Known folder id of "Downloads"; the value may contain %USERPROFILE%.
-        let set = reg::get_string(reg::CURRENT_USER, SHELL_FOLDERS, "{374DE290-123F-4565-9164-39C4925E467B}")
-            .map(|v| PathBuf::from(v.replace("%USERPROFILE%", &home.to_string_lossy())))
-            .filter(|p| p.is_absolute());
-        return set.unwrap_or_else(|| home.join("Downloads"));
-    }
-    #[allow(unreachable_code)]
-    let config = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".config"));
-    let from_file = std::fs::read_to_string(config.join("user-dirs.dirs")).ok().and_then(|txt| {
-        txt.lines().find_map(|l| l.strip_prefix("XDG_DOWNLOAD_DIR=")).map(|v| {
-            let v = v.trim().trim_matches('"');
-            PathBuf::from(v.replace("$HOME", &home.to_string_lossy()))
-        })
-    });
-    from_file.unwrap_or_else(|| home.join("Downloads"))
+    crate::platform::download_dir()
 }
 
 /// Keeps only a safe file name: no folders, no hidden files, no control characters, and nothing
@@ -71,8 +51,8 @@ fn safe_name(name: &str) -> String {
     let cleaned = cleaned.trim().trim_start_matches('.').trim_end_matches(['.', ' ']).to_string();
     let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
     const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
+        "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     let cleaned = if RESERVED.contains(&stem.as_str()) { format!("_{cleaned}") } else { cleaned };
     if cleaned.is_empty() { "file".into() } else { cleaned.chars().take(200).collect() }
@@ -93,10 +73,7 @@ fn free_path(dir: &Path, name: &str) -> PathBuf {
         Some(i) if i > 0 => (&name[..i], &name[i..]),
         _ => (name, ""),
     };
-    (2..)
-        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
-        .find(|p| !p.exists())
-        .unwrap()
+    (2..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap()
 }
 
 #[cfg(test)]
@@ -138,9 +115,12 @@ pub async fn send(endpoint: &Endpoint, to: EndpointId, path: &Path) -> Result<St
     // Wait for the friend to accept (or decline) the file.
     let mut reader = BufReader::new(recv);
     let mut decision = String::new();
-    let read = tokio::time::timeout(ANSWER_TIMEOUT + std::time::Duration::from_secs(10), (&mut reader).take(64).read_line(&mut decision))
-        .await
-        .map_err(|_| anyhow!("your friend did not answer"))?;
+    let read = tokio::time::timeout(
+        ANSWER_TIMEOUT + std::time::Duration::from_secs(10),
+        (&mut reader).take(64).read_line(&mut decision),
+    )
+    .await
+    .map_err(|_| anyhow!("your friend did not answer"))?;
     read?;
     match decision.trim() {
         "accept" => {}
@@ -185,7 +165,7 @@ impl ProtocolHandler for FileReceiver {
         let paths = Paths::detect();
         let friend = FriendList::load(&paths).ok().and_then(|l| l.by_id().get(&id).cloned());
         let Some(friend) = friend.filter(|_| !paths.is_invisible()) else {
-            connection.close(crate::proto::CODE_NOT_FRIEND.into(), b"not a friend");
+            connection.close(crate::common::proto::CODE_NOT_FRIEND.into(), b"not a friend");
             return Ok(());
         };
         match receive(&connection, id, &friend.nickname, &self.on_offer).await {
@@ -198,7 +178,12 @@ impl ProtocolHandler for FileReceiver {
     }
 }
 
-async fn receive(connection: &Connection, id: EndpointId, nickname: &str, on_offer: &Arc<OfferFn>) -> Result<Option<(String, PathBuf)>> {
+async fn receive(
+    connection: &Connection,
+    id: EndpointId,
+    nickname: &str,
+    on_offer: &Arc<OfferFn>,
+) -> Result<Option<(String, PathBuf)>> {
     let (mut send, recv) = connection.accept_bi().await?;
     let mut reader = BufReader::new(recv);
     let mut line = Vec::new();

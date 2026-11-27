@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::Profile;
+use crate::common::profile::Profile;
 
 /// Protocol identifier (must match on both sides).
 pub const ALPN: &[u8] = b"archmates/presence/1";

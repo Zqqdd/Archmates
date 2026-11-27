@@ -65,11 +65,20 @@ fn pywal() -> Option<Theme> {
 #[cfg(windows)]
 fn windows_colors() -> Option<Theme> {
     use archmates::platform::reg;
-    let light = reg::get_dword(reg::CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme")
-        .unwrap_or(0)
+    let light = reg::get_dword(
+        reg::CURRENT_USER,
+        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        "AppsUseLightTheme",
+    )
+    .unwrap_or(0)
         == 1;
     let base = if light {
-        Theme { bg: Color32::from_rgb(0xf4, 0xf1, 0xee), fg: Color32::from_rgb(0x1c, 0x1b, 0x1f), accent: FALLBACK.accent, dark: false }
+        Theme {
+            bg: Color32::from_rgb(0xf4, 0xf1, 0xee),
+            fg: Color32::from_rgb(0x1c, 0x1b, 0x1f),
+            accent: FALLBACK.accent,
+            dark: false,
+        }
     } else {
         FALLBACK
     };
@@ -164,10 +173,17 @@ pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let Ok(handle) = cc.window_handle() else { return false };
         if let RawWindowHandle::Win32(h) = handle.as_raw() {
-            use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+            use windows_sys::Win32::Graphics::Dwm::{
+                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+            };
             let pref = DWMWCP_ROUND;
             unsafe {
-                DwmSetWindowAttribute(h.hwnd.get() as _, DWMWA_WINDOW_CORNER_PREFERENCE as _, (&pref as *const i32).cast(), 4);
+                DwmSetWindowAttribute(
+                    h.hwnd.get() as _,
+                    DWMWA_WINDOW_CORNER_PREFERENCE as _,
+                    (&pref as *const i32).cast(),
+                    4,
+                );
             }
         }
         let tint = (theme.bg.r(), theme.bg.g(), theme.bg.b(), if theme.dark { 110 } else { 90 });
@@ -185,7 +201,13 @@ pub fn glass(cc: &eframe::CreationContext<'_>, theme: &Theme) -> bool {
 pub fn card(ui: &mut egui::Ui, theme: &Theme, glass: bool) {
     let rect = ui.max_rect();
     let (fill, radius) = if glass { (alpha(theme.bg, 0.35), 0) } else { (alpha(theme.bg, 0.92), 18) };
-    ui.painter().rect(rect, CornerRadius::same(radius), fill, Stroke::new(1.0_f32, alpha(theme.fg, 0.22)), egui::StrokeKind::Inside);
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius),
+        fill,
+        Stroke::new(1.0_f32, alpha(theme.fg, 0.22)),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// The little title: icon + lowercase monospace name in the accent color, as on Linux.

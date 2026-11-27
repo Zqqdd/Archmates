@@ -34,35 +34,35 @@ impl Paths {
             let base = PathBuf::from(base);
             return Self { data: base.join("data"), cache: base.join("cache") };
         }
-        #[cfg(windows)]
-        {
-            let home = crate::platform::home();
-            let roaming = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Roaming"));
-            let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Local"));
-            return Self { data: roaming.join("Winmates"), cache: local.join("Winmates") };
-        }
-        #[allow(unreachable_code)]
-        let home = crate::platform::home();
-        let data = std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join(".local/share"))
-            .join("archmates");
-        let cache = std::env::var("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join(".cache"))
-            .join("archmates");
+        let (data, cache) = crate::platform::app_dirs();
         Self { data, cache }
     }
 
-    pub fn secret_key(&self) -> PathBuf { self.data.join("secret.key") }
-    pub fn friends(&self) -> PathBuf { self.data.join("friends.toml") }
-    pub fn invisible(&self) -> PathBuf { self.data.join("invisible") }
-    pub fn widget_mode(&self) -> PathBuf { self.data.join("widget") }
-    pub fn avatar(&self) -> PathBuf { self.data.join("avatar") }
-    pub fn state(&self) -> PathBuf { self.cache.join("state.json") }
-    pub fn avatars(&self) -> PathBuf { self.cache.join("avatars") }
+    pub fn secret_key(&self) -> PathBuf {
+        self.data.join("secret.key")
+    }
+    pub fn friends(&self) -> PathBuf {
+        self.data.join("friends.toml")
+    }
+    pub fn invisible(&self) -> PathBuf {
+        self.data.join("invisible")
+    }
+    pub fn widget_mode(&self) -> PathBuf {
+        self.data.join("widget")
+    }
+    pub fn avatar(&self) -> PathBuf {
+        self.data.join("avatar")
+    }
+    pub fn state(&self) -> PathBuf {
+        self.cache.join("state.json")
+    }
+    pub fn avatars(&self) -> PathBuf {
+        self.cache.join("avatars")
+    }
 
-    pub fn is_invisible(&self) -> bool { self.invisible().exists() }
+    pub fn is_invisible(&self) -> bool {
+        self.invisible().exists()
+    }
 }
 
 /// Loads the secret key, or creates one on first run.
@@ -70,10 +70,7 @@ pub fn load_or_create_key(paths: &Paths) -> Result<SecretKey> {
     let p = paths.secret_key();
     if p.exists() {
         let bytes = fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
-        let arr: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .context("corrupted secret key (not 32 bytes long)")?;
+        let arr: [u8; 32] = bytes.as_slice().try_into().context("corrupted secret key (not 32 bytes long)")?;
         return Ok(SecretKey::from_bytes(&arr));
     }
     fs::create_dir_all(&paths.data)?;
@@ -127,10 +124,7 @@ impl FriendList {
 
     /// Friends with a valid code, indexed by endpoint id.
     pub fn by_id(&self) -> BTreeMap<EndpointId, Friend> {
-        self.friends
-            .iter()
-            .filter_map(|f| f.code.parse::<EndpointId>().ok().map(|id| (id, f.clone())))
-            .collect()
+        self.friends.iter().filter_map(|f| f.code.parse::<EndpointId>().ok().map(|id| (id, f.clone()))).collect()
     }
 
     pub fn add(&mut self, code: &str, nickname: &str) -> Result<()> {

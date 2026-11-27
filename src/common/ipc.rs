@@ -13,11 +13,23 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
-    SendMessage { to: String, text: String },
-    SendFile { to: String, path: String },
-    AnswerFile { id: String, accept: bool },
+    SendMessage {
+        to: String,
+        text: String,
+    },
+    SendFile {
+        to: String,
+        path: String,
+    },
+    AnswerFile {
+        id: String,
+        accept: bool,
+    },
     /// Sends a recorded voice message (a WAV file, up to 5 minutes) to a friend who is online.
-    SendVoice { to: String, path: String },
+    SendVoice {
+        to: String,
+        path: String,
+    },
     /// "Are you running?" Answer: ok, with the service version as message.
     Ping,
     /// Stops the service (used by Winmates to restart it after an update, or to quit).
@@ -34,7 +46,8 @@ pub struct Answer {
 #[cfg(windows)]
 pub fn pipe_name() -> String {
     // One pipe per user, and per test instance (ARCHMATES_HOME).
-    let tag = std::env::var("ARCHMATES_HOME").map(|h| crate::profile::fingerprint(h.as_bytes())).unwrap_or_default();
+    let tag =
+        std::env::var("ARCHMATES_HOME").map(|h| crate::common::profile::fingerprint(h.as_bytes())).unwrap_or_default();
     let user: String = crate::platform::user_name().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     format!(r"\\.\pipe\winmates-{user}{tag}")
 }
@@ -42,11 +55,11 @@ pub fn pipe_name() -> String {
 pub fn socket_path() -> PathBuf {
     if std::env::var_os("ARCHMATES_HOME").is_some() {
         // Test instances keep their socket next to their own data.
-        return crate::config::Paths::detect().cache.join("archmates.sock");
+        return crate::common::config::Paths::detect().cache.join("archmates.sock");
     }
     std::env::var("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| crate::config::Paths::detect().cache)
+        .unwrap_or_else(|_| crate::common::config::Paths::detect().cache)
         .join("archmates.sock")
 }
 
@@ -99,7 +112,8 @@ where
             std::fs::create_dir_all(dir)?;
         }
         let _ = std::fs::remove_file(&path);
-        let listener = tokio::net::UnixListener::bind(&path).with_context(|| format!("cannot open {}", path.display()))?;
+        let listener =
+            tokio::net::UnixListener::bind(&path).with_context(|| format!("cannot open {}", path.display()))?;
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;

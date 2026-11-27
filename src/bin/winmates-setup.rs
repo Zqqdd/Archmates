@@ -9,7 +9,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-#[path = "../ui/theme.rs"]
+#[path = "../gui/theme.rs"]
 mod theme;
 
 use eframe::egui::{self, RichText};
@@ -62,10 +62,10 @@ impl Setup {
     fn install(&mut self) {
         #[cfg(windows)]
         {
-            self.step = match archmates::launcher::windows::install(&PROGRAMS, self.desktop, self.autostart) {
+            self.step = match archmates::platform::windows::install::install(&PROGRAMS, self.desktop, self.autostart) {
                 Ok(()) => {
                     // Start it the way Windows will at every login: update check, service, window.
-                    let _ = std::process::Command::new(archmates::launcher::windows::updater()).spawn();
+                    let _ = std::process::Command::new(archmates::platform::windows::install::updater()).spawn();
                     Step::Done
                 }
                 Err(e) => Step::Failed(format!("{e:#}")),

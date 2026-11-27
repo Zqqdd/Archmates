@@ -11,7 +11,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use archmates::launcher::{self, UpdateResult};
+use archmates::service::control::{self as launcher, UpdateResult};
 
 fn main() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -25,13 +25,13 @@ fn main() {
              (in %APPDATA%\\Winmates), so you can reinstall later without adding your friends again.",
         );
         if ok {
-            runtime.block_on(launcher::windows::uninstall(false));
+            runtime.block_on(archmates::platform::windows::install::uninstall(false));
         }
         return;
     }
 
     #[cfg(windows)]
-    archmates::update::cleanup_old_programs();
+    archmates::platform::cleanup_old_programs();
 
     let result = runtime.block_on(launcher::update(true));
     match &result {
@@ -40,7 +40,9 @@ fn main() {
             // Run the new updater: it starts the new service and opens the new app.
             #[cfg(windows)]
             {
-                let _ = std::process::Command::new(launcher::windows::updater()).arg("--after-update").spawn();
+                let _ = std::process::Command::new(archmates::platform::windows::install::updater())
+                    .arg("--after-update")
+                    .spawn();
                 return;
             }
         }
@@ -49,14 +51,16 @@ fn main() {
         UpdateResult::UpToDate => {}
     }
     #[cfg(windows)]
-    launcher::windows::refresh_version();
+    archmates::platform::windows::install::refresh_version();
 
     let service = runtime.block_on(launcher::ensure_service());
     if !service {
         eprintln!("winmates-updater: the service did not start");
     }
     if launcher::open_at_login(&archmates::config::Paths::detect()) && !args.iter().any(|a| a == "--no-window") {
-        let app = std::env::current_exe().ok().map(|e| e.with_file_name(if cfg!(windows) { "winmates.exe" } else { "winmates" }));
+        let app = std::env::current_exe()
+            .ok()
+            .map(|e| e.with_file_name(if cfg!(windows) { "winmates.exe" } else { "winmates" }));
         if let Some(app) = app.filter(|a| a.exists()) {
             let _ = std::process::Command::new(app).arg("--from-updater").spawn();
         }

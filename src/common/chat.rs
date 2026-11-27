@@ -6,14 +6,14 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::config::Paths;
+use crate::common::config::Paths;
 
 /// Longest message accepted (characters).
 pub const MESSAGE_MAX: usize = 4000;
@@ -58,7 +58,7 @@ fn save_all(paths: &Paths, code: &str, messages: &[Message]) -> Result<()> {
         out.push_str(&serde_json::to_string(m)?);
         out.push('\n');
     }
-    crate::config::write_atomic(&path(paths, code), out.as_bytes())
+    crate::common::config::write_atomic(&path(paths, code), out.as_bytes())
 }
 
 pub fn append(paths: &Paths, code: &str, message: &Message) -> Result<()> {
@@ -98,15 +98,12 @@ pub fn mark_delivered(paths: &Paths, code: &str, id: &str) -> Result<()> {
 pub fn mark_read(paths: &Paths, code: &str) -> Result<()> {
     let p = read_marker(paths, code);
     fs::create_dir_all(p.parent().unwrap())?;
-    fs::write(p, crate::daemon::now_ms().to_string())?;
+    fs::write(p, crate::common::time::now_ms().to_string())?;
     Ok(())
 }
 
 pub fn unread(paths: &Paths, code: &str) -> usize {
-    let since: u64 = fs::read_to_string(read_marker(paths, code))
-        .ok()
-        .and_then(|t| t.trim().parse().ok())
-        .unwrap_or(0);
+    let since: u64 = fs::read_to_string(read_marker(paths, code)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
     load(paths, code).iter().filter(|m| m.dir == "in" && m.ms > since).count()
 }
 
@@ -114,7 +111,7 @@ pub fn new_id() -> String {
     let mut random = [0u8; 6];
     let _ = getrandom::fill(&mut random);
     let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    format!("{}-{hex}", crate::daemon::now_ms())
+    format!("{}-{hex}", crate::common::time::now_ms())
 }
 
 /// What `delete_conversation` removed.
@@ -130,8 +127,8 @@ pub struct Deleted {
 pub fn delete_conversation(paths: &Paths, code: &str, nickname: &str) -> Result<Deleted> {
     let messages = load(paths, code);
     let mut deleted = Deleted { messages: messages.len(), files: 0 };
-    let downloads = crate::transfer::download_dir().join(crate::transfer::DOWNLOAD_FOLDER);
-    let voice = crate::voice::dir(paths);
+    let downloads = crate::common::transfer::download_dir().join(crate::common::transfer::DOWNLOAD_FOLDER);
+    let voice = crate::common::voice::dir(paths);
     // Received files and voice messages listed in the conversation (even if the friend was
     // renamed since), but only inside the Archmates download folder or the voice folder.
     for m in &messages {
@@ -143,7 +140,7 @@ pub fn delete_conversation(paths: &Paths, code: &str, nickname: &str) -> Result<
         }
     }
     // The friend's whole download folder.
-    let folder = crate::transfer::received_dir(nickname);
+    let folder = crate::common::transfer::received_dir(nickname);
     if folder.starts_with(&downloads) && folder != downloads {
         if let Ok(entries) = fs::read_dir(&folder) {
             deleted.files += entries.flatten().filter(|e| e.path().is_file()).count();
@@ -154,7 +151,9 @@ pub fn delete_conversation(paths: &Paths, code: &str, nickname: &str) -> Result<
     if let Ok(entries) = fs::read_dir(&voice) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if (name.starts_with(&format!("{code}-")) || name.starts_with(&format!("sent-{code}-"))) && fs::remove_file(e.path()).is_ok() {
+            if (name.starts_with(&format!("{code}-")) || name.starts_with(&format!("sent-{code}-")))
+                && fs::remove_file(e.path()).is_ok()
+            {
                 deleted.files += 1;
             }
         }
@@ -181,18 +180,23 @@ mod tests {
         }
         let paths = Paths::detect();
         let code = "friendcode";
-        let received_dir = crate::transfer::received_dir("bob");
+        let received_dir = crate::common::transfer::received_dir("bob");
         fs::create_dir_all(&received_dir).unwrap();
         let received = received_dir.join("photo.png");
         fs::write(&received, b"x").unwrap();
         let mine = base.join("my-own-file.txt");
         fs::write(&mine, b"keep me").unwrap();
-        let voice_file = crate::voice::dir(&paths).join(format!("{code}-1.wav"));
+        let voice_file = crate::common::voice::dir(&paths).join(format!("{code}-1.wav"));
         fs::create_dir_all(voice_file.parent().unwrap()).unwrap();
         fs::write(&voice_file, b"x").unwrap();
         let msg = |id: &str, dir: &str, file: Option<&Path>| Message {
-            id: id.into(), dir: dir.into(), text: "t".into(), ms: 1, delivered: true,
-            file: file.map(|f| f.to_string_lossy().into_owned()), voice: None,
+            id: id.into(),
+            dir: dir.into(),
+            text: "t".into(),
+            ms: 1,
+            delivered: true,
+            file: file.map(|f| f.to_string_lossy().into_owned()),
+            voice: None,
         };
         append(&paths, code, &msg("1", "in", Some(&received))).unwrap();
         append(&paths, code, &msg("2", "out", Some(&mine))).unwrap();
