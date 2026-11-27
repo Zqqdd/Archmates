@@ -26,15 +26,19 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Returns the widget's window handle.
 #[cfg(windows)]
-pub fn pin(cc: &eframe::CreationContext<'_>) {
+pub fn pin(cc: &eframe::CreationContext<'_>) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GWL_EXSTYLE, GWLP_HWNDPARENT, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW,
         WS_EX_TOOLWINDOW,
     };
-    let Ok(handle) = cc.window_handle() else { return };
-    let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
+    let Ok(handle) = cc.window_handle() else { return None };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else { return None };
     let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -43,11 +47,20 @@ pub fn pin(cc: &eframe::CreationContext<'_>) {
         if !progman.is_null() {
             SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman as isize);
         }
+        // No corners or border from Windows: the widget draws its own card, rounded like the
+        // Noctalia glass (18 px; Windows' corners are 8), on a transparent window.
+        let pref = DWMWCP_DONOTROUND;
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE as _, (&pref as *const i32).cast(), 4);
+        let none = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR as _, (&none as *const u32).cast(), 4);
     }
+    Some(hwnd as isize)
 }
 
 #[cfg(not(windows))]
-pub fn pin(_cc: &eframe::CreationContext<'_>) {}
+pub fn pin(_cc: &eframe::CreationContext<'_>) -> Option<isize> {
+    None
+}
 
 /// The panel's window handle, once it is on screen (one of ours, found by its title).
 #[cfg(windows)]

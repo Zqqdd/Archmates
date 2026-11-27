@@ -28,10 +28,12 @@ impl App {
             }
             #[cfg(windows)]
             if self.panel_glass.is_none() && self.panel_tries < 60 {
-                // Its window exists once drawn: give it the same acrylic as the widget.
+                // Its window exists once drawn: give it Windows' acrylic (a real blur of what is
+                // behind, which can't be rounded past 8 px), as bright as the widget's glass.
                 self.panel_tries += 1;
                 if let Some(hwnd) = crate::desktop::panel_hwnd() {
-                    self.panel_glass = Some(theme::glass_hwnd(hwnd, &self.theme));
+                    let luminosity = self.backdrop.as_ref().map(|b| b.average);
+                    self.panel_glass = Some(theme::glass_hwnd(hwnd, &self.theme, luminosity));
                 }
                 ctx.request_repaint();
             }
@@ -41,7 +43,8 @@ impl App {
             let on_page =
                 ctx.input(|i| i.viewport().focused.unwrap_or(true) && !i.viewport().minimized.unwrap_or(false));
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-                theme::card(ui, &theme, glass);
+                // With glass, Windows rounds the window (8 px, its only size): the rim follows.
+                theme::card(ui, &theme, glass, if glass { 8 } else { 18 });
                 let full = ui.max_rect();
                 // Opens like a Noctalia panel: fades in while rising a little.
                 let t = ease_out(((ui.input(|i| i.time) - self.panel_since) / 0.22) as f32);
